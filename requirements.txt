@@ -1,0 +1,10 @@
+# Slack のメッセージ取得・投稿。課題7で入れたものと同じ版に揃える。
+slack_sdk==3.43.0
+# LINE Messaging API。requests を直接 import するので明示する
+# （依存が外れたときに気づけるようにするため）。
+requests==2.34.2
+# 要約に使う Gemini。**この Section で新規**。
+google-genai==2.20.0
+# .env を読む。os.environ とは混ぜない（common/env_file.py を参照）。
+python-dotenv==1.2.3
+pytest==9.1.1

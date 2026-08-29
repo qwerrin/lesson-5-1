@@ -1,0 +1,32 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 資格情報。public リポジトリなので、絶対に追跡させない。
+# credentials.json は OAuth クライアントのシークレット、
+# token.json は自分の Google アカウントのアクセス権そのもの。
+credentials.json
+token.json
+*credentials*.json
+*client_secret*.json
+token*.json
+
+# 課題4（Zoom）の Server-to-Server OAuth の資格情報。
+# Account ID / Client ID / Client Secret を環境変数で渡すため。
+.env
+.env.*
+
+# ただし見本は追跡する。課題9は .env 方式なので、値の入れ方が分かる
+# ファイルがリポジトリに無いと、採点者が動かせない。
+# `.env.*` に巻き込まれて黙って除外されるため、明示的に戻す。
+!.env.example
+
+# mutate.py が強制終了に備えて置く控え。正常終了すれば残らない。
+.mutate_backup/
+
+# 実行時の状態。**記録（results.json）とは性質が違う。**
+# 追跡すると、新しいクローンが「他人がどこまで読んだか」を持って始まり、
+# まだ読んでいない範囲を飛ばす——この課題の目的（見逃しを防ぐ）に真っ向から反する。
+# コミットのたびに差分が出るノイズにもなる。
+task1/state.json

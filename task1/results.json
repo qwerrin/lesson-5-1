@@ -1,15 +1,35 @@
 {
   "channel": "C0BQFU7STLM",
+  "oldest": null,
   "to_masked": "U8…9a",
   "basic_id": "@687jseqd",
   "bot_user_id": "U1b305ee6f6bcf47c7fa6ad0277ccb17c",
-  "read_count": 1,
-  "skipped": {},
+  "usage_before": 1,
+  "usage_after": 2,
+  "read_count": 11,
+  "skipped": {
+    "channel_join": 2
+  },
   "pages": 1,
   "truncated": false,
-  "latest_ts": "1788011973.678599",
-  "summarized": false,
-  "body_chars": 51,
-  "message_id": "629448719246819856",
-  "request_id": "c449e2db-6b3d-467e-a477-5284ec12f59e"
+  "latest_ts": "1788495546.216329",
+  "reply_read_count": 3,
+  "reply_failed": [],
+  "reply_watch": {
+    "1786914717.151829": "",
+    "1786915517.894839": "",
+    "1788011303.788649": "",
+    "1788011305.304889": "",
+    "1788011306.660889": "",
+    "1788011308.160829": "",
+    "1788011309.655949": "",
+    "1788011311.142259": "",
+    "1788011312.620209": "",
+    "1788011973.678599": "",
+    "1788495546.216329": ""
+  },
+  "summarized": true,
+  "body_chars": 400,
+  "message_id": "630264724260913172",
+  "request_id": "be3aaf5e-bb98-414d-9681-98f8fff09771"
 }

@@ -7,7 +7,7 @@ Section 4-3 の [`lesson-4-3-2`](https://github.com/qwerrin/lesson-4-3-2) とは
 
 | 課題 | 場所 | 状態 |
 |---|---|---|
-| 1 Slack の情報を取得・要約して LINE に送るツール | [`task1/`](task1/README.md) | 実装・テスト・実機確認まで完了 |
+| 1 Slack の情報を取得・要約して LINE に送るツール | [`task1/`](task1/README.md) | 実装・テスト・実機確認まで完了。**発展（スレッドの返信も読む）を実装済み** |
 | 2 EC サイト → Google スプレッドシート | — | 未着手 |
 | 3 Google Meet 録音 → 議事録 → Google ドキュメント | — | 未着手 |
 

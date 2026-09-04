@@ -55,10 +55,20 @@ class State:
     """
 
     cursors: dict = field(default_factory=dict)
+    #: チャンネル → {親の ts: 最後に読んだ返信の ts}。**空文字は「まだ0件」**。
+    threads: dict = field(default_factory=dict)
+
+
+#: 見張る親の上限。**上限そのものより、超えたと言うことが大事。**
+#:
+#: 1実行あたり ``conversations.replies`` をこの回数だけ呼ぶ。Slack の Tier 3 は
+#: 毎分 50+ なので 20 は余裕がある。増やすほど古い議論を拾えるが、
+#: そのぶん毎回叩く。
+WATCH_LIMIT = 20
 
 
 def empty() -> State:
-    return State(cursors={})
+    return State(cursors={}, threads={})
 
 
 def cursor_for(current: State, channel: str) -> str | None:
@@ -78,6 +88,58 @@ def advanced(current: State, channel: str, ts: str) -> State:
         raise ValueError("空の ts では位置を進められません")
 
     return replace(current, cursors={**current.cursors, channel: value})
+
+
+def watch_for(current: State, channel: str) -> dict:
+    """そのチャンネルで見張っている親。``{親の ts: 最後に読んだ返信の ts}``。"""
+    value = current.threads.get(channel)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def watching(current: State, channel: str, parents) -> tuple[State, tuple[str, ...]]:
+    """見張る親を足した**新しい** State と、**窓から落ちた親**を返す。
+
+    既に読んだ位置は**上書きしない**。上書きすると同じ返信を読み直して、
+    要約に同じ発言が重複して混ざる。
+
+    見張る親は増え続けるので ``WATCH_LIMIT`` で切る。**切ったことを返り値に
+    出す**——落ちた親に後から付いた返信は二度と読まれないので、
+    呼ぶ側が画面に出せないと「静かに減る」ことになる。
+    """
+    known = watch_for(current, channel)
+
+    for parent in parents:
+        key = str(parent or "").strip()
+        if not key:
+            continue
+        known.setdefault(key, "")
+
+    dropped: tuple[str, ...] = ()
+    if len(known) > WATCH_LIMIT:
+        # 挿入順＝古い順。古いほうから落とす。
+        overflow = len(known) - WATCH_LIMIT
+        keys = list(known)
+        dropped = tuple(keys[:overflow])
+        known = {key: known[key] for key in keys[overflow:]}
+
+    return replace(current, threads={**current.threads, channel: known}), dropped
+
+
+def replies_advanced(current: State, channel: str, latest_by_parent: dict) -> State:
+    """スレッドごとの位置を進めた**新しい** State を返す。
+
+    **見張っていない親は足さない。** 足すと窓の意味が消えて、
+    ``threads`` が無限に伸びる。
+    """
+    known = watch_for(current, channel)
+
+    for parent, ts in latest_by_parent.items():
+        key = str(parent or "")
+        value = str(ts or "").strip()
+        if key in known and value:
+            known[key] = value
+
+    return replace(current, threads={**current.threads, channel: known})
 
 
 def load(path: str | Path) -> State:
@@ -116,7 +178,31 @@ def load(path: str | Path) -> State:
                 "ts は識別子なので、数値として保存すると別のメッセージを指します。"
             )
 
-    return State(cursors=dict(cursors))
+    # **この欄は後から足した。** 持たない古いファイルは正常として読む——
+    # ここで止めると、位置を見失った扱いで全履歴を読み直すことになる。
+    threads = raw.get("threads", {})
+    if not isinstance(threads, dict):
+        raise StateError(f"状態ファイルの threads が辞書ではありません: {target}")
+
+    for channel, per_channel in threads.items():
+        if not isinstance(per_channel, dict):
+            raise StateError(
+                f"状態ファイルの threads の中身が辞書ではありません: {channel} -> "
+                f"{type(per_channel).__name__}"
+            )
+        for parent, value in per_channel.items():
+            if not isinstance(value, str):
+                # cursors と同じ判断。数値で入っていたら黙って文字列化しない。
+                raise StateError(
+                    f"状態ファイルの返信の位置が文字列ではありません: "
+                    f"{channel}/{parent} -> {type(value).__name__}\n"
+                    "ts は識別子なので、数値として保存すると別のメッセージを指します。"
+                )
+
+    return State(
+        cursors=dict(cursors),
+        threads={key: dict(value) for key, value in threads.items()},
+    )
 
 
 def save(path: str | Path, current: State) -> None:
@@ -129,7 +215,9 @@ def save(path: str | Path, current: State) -> None:
         # json.dumps を先に済ませる。書けない値をファイルへ流し始めてから
         # 落ちると、一時ファイルが半端に残る。
         body = json.dumps(
-            {"cursors": current.cursors}, ensure_ascii=False, indent=2
+            {"cursors": current.cursors, "threads": current.threads},
+            ensure_ascii=False,
+            indent=2,
         )
         temporary.write_text(body + "\n", encoding="utf-8")
         os.replace(temporary, target)

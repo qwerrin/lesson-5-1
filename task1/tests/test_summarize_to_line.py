@@ -529,3 +529,293 @@ class Record(RunCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ================================================== スレッドの返信（発展）
+
+
+class FakeSlackWithThreads(FakeSlack):
+    """``conversations_replies`` も持つ相手。
+
+    **返信は ``conversations_history`` に出さない。** 2026-09-04 に実測した
+    本物の振る舞いがこれで、偽物がここを間違えると「history にも出るから
+    足さなくていい」という誤った実装を通してしまう。
+    """
+
+    def __init__(self, messages, *, replies=None, **kwargs):
+        super().__init__(messages, **kwargs)
+        self.replies = {k: list(v) for k, v in (replies or {}).items()}
+        self.reply_calls = []
+
+    def conversations_replies(self, **kwargs):
+        self.reply_calls.append(kwargs)
+        ts = kwargs.get("ts")
+        parent = {"ts": ts, "text": "親", "user": "U1", "thread_ts": ts}
+        return {
+            "ok": True,
+            "messages": [parent] + list(self.replies.get(ts, [])),
+            "response_metadata": {"next_cursor": ""},
+        }
+
+
+def thread_reply(ts, parent, text="返信", user="U2"):
+    return {"ts": ts, "text": text, "user": user, "thread_ts": parent}
+
+
+class ThreadRunCase(RunCase):
+    def run_tool(self, messages, *, replies=None, include_replies=True, **kwargs):
+        self.session = kwargs.pop("session", None) or FakeLineSession()
+        self.gemini = kwargs.pop("gemini", None) or FakeGemini()
+        self.slack = FakeSlackWithThreads(messages, replies=replies)
+        return tool.run(
+            slack_client=self.slack,
+            line_session=self.session,
+            bot_info=bot_info(),
+            reachability=kwargs.pop("reachability", None) or reachable(),
+            remaining=kwargs.pop("remaining", 100),
+            gemini=self.gemini,
+            channel=CHANNEL,
+            channel_label="#general",
+            to=USER_ID,
+            state_path=self.state_path,
+            results_path=self.results_path,
+            include_replies=include_replies,
+            **kwargs,
+        )
+
+
+class RepliesAreOptional(ThreadRunCase):
+    def test_disabled_calls_conversations_replies_zero_times(self):
+        """既定では1回も呼ばない。**足した機能が黙って課金・通信を増やさない。**"""
+        self.run_tool([slack_message("300")], include_replies=False)
+
+        self.assertEqual(self.slack.reply_calls, [])
+
+
+class RepliesAreIncluded(ThreadRunCase):
+    def test_replies_reach_the_body(self):
+        """**この発展の本題。**
+
+        ``conversations.history`` は返信を返さない（2026-09-04 実測：親1・返信3を
+        投稿して history の増分は +1）。親だけ届くと「金曜でいけそう？」しか
+        読めず、そこで決まった変更が丸ごと落ちる。
+        """
+        outcome = self.run_tool(
+            [slack_message("300", text="金曜でいけそう？")],
+            replies={"300": [thread_reply("301", "300", text="月曜に倒したい")]},
+        )
+
+        self.assertIn("月曜に倒したい", outcome.body)
+
+    def test_reply_count_is_shown_separately(self):
+        """**返信の件数を別に出す。**
+
+        受け取った人が Slack を開いても、返信はチャンネル本文に出ていない。
+        合計だけ出すと「3件と書いてあるのに1件しか見えない」になる。
+
+        **見出しの文字列そのものを見る。** 最初は ``"返信" in body`` と
+        ``"2" in body`` で書いていたが、どちらも**別の場所で満たされていた**——
+        「返信」は偽の本文に、「2」は返信の ts（``302``）に入っている。
+        件数の表示を丸ごと消すミューテーションが素通りした（2026-09-04）。
+        課題9・課題1で踏んだのと同じ形が、また別の場所で開いた。
+        """
+        outcome = self.run_tool(
+            [slack_message("300")],
+            replies={"300": [thread_reply("301", "300"), thread_reply("302", "300")]},
+        )
+
+        self.assertIn("（うちスレッド返信 2 件）", outcome.body.splitlines()[0])
+
+    def test_headline_says_nothing_about_threads_when_there_are_none(self):
+        """返信が0件のときに内訳を出さない。**無い内訳を書くと嘘になる。**"""
+        outcome = self.run_tool([slack_message("300")])
+
+        self.assertNotIn("スレッド返信", outcome.body)
+
+    def test_replies_are_merged_in_time_order(self):
+        outcome = self.run_tool(
+            [slack_message("300", text="さき"), slack_message("400", text="あと")],
+            replies={"300": [thread_reply("350", "300", text="あいだ")]},
+        )
+
+        body = outcome.body
+        self.assertLess(body.index("さき"), body.index("あいだ"))
+        self.assertLess(body.index("あいだ"), body.index("あと"))
+
+
+class WatchingLaterReplies(ThreadRunCase):
+    def test_every_read_message_is_watched_not_only_current_parents(self):
+        """**返信は後から付く。**
+
+        読んだ時点で ``reply_count`` が 0 でも、あとで議論が始まる。
+        「いま返信を持っている親」だけを見張ると、**いちばん多い形を取りこぼす**。
+        """
+        self.run_tool([slack_message("300")])
+
+        self.assertEqual(
+            list(state.watch_for(state.load(self.state_path), CHANNEL)), ["300"]
+        )
+
+    def test_watched_parent_is_polled_after_the_cursor_moved_past_it(self):
+        """位置が親を追い越した後も返信を拾える。**これができないと発展の意味が無い。**"""
+        self.run_tool([slack_message("300")])
+
+        second = self.run_tool([], replies={"300": [thread_reply("301", "300")]})
+
+        self.assertIn("301", [m.ts for m in second.replies.messages])
+
+    def test_thread_position_does_not_advance_when_the_send_fails(self):
+        """``cursors`` と同じ順番を守る。送信が失敗した回で進めると取りこぼす。"""
+        self.run_tool([slack_message("300")])
+
+        self.run_tool(
+            [],
+            replies={"300": [thread_reply("301", "300")]},
+            session=FakeLineSession(push_fails=True),
+        )
+
+        self.assertEqual(
+            state.watch_for(state.load(self.state_path), CHANNEL), {"300": ""}
+        )
+
+    def test_thread_position_advances_after_a_successful_send(self):
+        self.run_tool([slack_message("300")])
+
+        self.run_tool([], replies={"300": [thread_reply("301", "300")]})
+
+        self.assertEqual(
+            state.watch_for(state.load(self.state_path), CHANNEL), {"300": "301"}
+        )
+
+    def test_a_reply_is_not_sent_twice(self):
+        """位置が効いていることを、**2回目の本文が空になること**で確かめる。"""
+        self.run_tool([slack_message("300")])
+        self.run_tool([], replies={"300": [thread_reply("301", "300", text="ただ1回")]})
+
+        third = self.run_tool([], replies={"300": [thread_reply("301", "300", text="ただ1回")]})
+
+        self.assertNotIn("ただ1回", third.body)
+
+
+class WindowIsNotSilent(ThreadRunCase):
+    def test_dropped_parents_are_reported(self):
+        """窓から落ちた親は**画面に出す**。
+
+        落ちた親に後から付く返信は二度と読まれない。黙って落とすと、
+        この発展が塞いだはずの穴が、別の形で開き直す。
+        """
+        many = [slack_message(f"{i}.0") for i in range(1, state.WATCH_LIMIT + 3)]
+
+        outcome = self.run_tool(many)
+
+        self.assertEqual(outcome.dropped_threads, ("1.0", "2.0"))
+
+    def test_failed_threads_are_reported(self):
+        class Failing(FakeSlackWithThreads):
+            def conversations_replies(self, **kwargs):
+                raise RuntimeError("boom")
+
+        self.run_tool([slack_message("300")])
+        self.slack = Failing([], replies={})
+        outcome = tool.run(
+            slack_client=self.slack,
+            line_session=FakeLineSession(),
+            bot_info=bot_info(),
+            reachability=reachable(),
+            remaining=100,
+            gemini=FakeGemini(),
+            channel=CHANNEL,
+            channel_label="#general",
+            to=USER_ID,
+            state_path=self.state_path,
+            results_path=self.results_path,
+            include_replies=True,
+        )
+
+        self.assertEqual(outcome.replies.failed, ("300",))
+
+
+class CommandLine(RunCase):
+    """CLI の層。**フラグは、足すだけでは効かない。**
+
+    ``parse_args`` に生えていても ``main`` が ``run`` へ渡し忘れれば、
+    利用者から見て**黙って無効**になる。エラーも出ないし、
+    「返信 0 件」と「返信を読んでいない」が同じ画面になる。
+    """
+
+    def factory(self, messages, replies=None):
+        session = FakeLineSession()
+        slack = FakeSlackWithThreads(messages, replies=replies)
+        self.slack = slack
+
+        def build(channel):
+            return {
+                "slack_client": slack,
+                "slack_identity": None,
+                "line_session": session,
+                "bot_info": bot_info(),
+                "reachability": reachable(),
+                "remaining": 100,
+                "gemini": FakeGemini(),
+                "to": USER_ID,
+            }
+
+        return build
+
+    def base_argv(self):
+        return ["--channel", CHANNEL, "--state", str(self.state_path), "--dry-run"]
+
+    def test_flag_defaults_to_off(self):
+        self.assertFalse(tool.parse_args(["--channel", CHANNEL]).include_replies)
+
+    def test_flag_is_parsed(self):
+        args = tool.parse_args(["--channel", CHANNEL, "--include-replies"])
+
+        self.assertTrue(args.include_replies)
+
+    def test_main_reaches_conversations_replies_when_asked(self):
+        """**渡し忘れをここで殺す。** 呼ばれたことを本物の経路で確かめる。"""
+        build = self.factory([slack_message("300")])
+
+        code = tool.main(self.base_argv() + ["--include-replies"], factory=build)
+
+        self.assertEqual(code, 0)
+        self.assertEqual([call["ts"] for call in self.slack.reply_calls], ["300"])
+
+    def test_main_does_not_touch_threads_by_default(self):
+        build = self.factory([slack_message("300")])
+
+        code = tool.main(self.base_argv(), factory=build)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.slack.reply_calls, [])
+
+
+class WatchCountIsAlwaysKnown(ThreadRunCase):
+    """見張っている本数は**記録から読まない**。
+
+    最初は ``outcome.record["reply_watch"]`` から読んでいた。記録は送信に
+    成功したときしか作られないので、``--dry-run`` の画面には
+    「見張っているスレッド **?** 本」と出た。
+
+    **値は手元にある。** 出せるものを「分からない」と表示すると、
+    読んだ人は「数えられない事情がある」と受け取る。実行画面は提出物なので、
+    ここは埋まっていなければならない。
+    """
+
+    def test_dry_run_still_knows_how_many_threads_are_watched(self):
+        outcome = self.run_tool([slack_message("300")], dry_run=True)
+
+        self.assertEqual(outcome.watching, 1)
+
+    def test_blocked_send_still_knows(self):
+        outcome = self.run_tool([slack_message("300")], remaining=0)
+
+        self.assertFalse(outcome.sent)
+        self.assertEqual(outcome.watching, 1)
+
+    def test_zero_when_replies_are_off(self):
+        """読んでいないときは 0。**「0本を見張った」ではなく「見張っていない」。**"""
+        outcome = self.run_tool([slack_message("300")], include_replies=False)
+
+        self.assertEqual(outcome.watching, 0)

@@ -48,7 +48,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -110,6 +110,15 @@ class Outcome:
     #: 要約したときに付ける原文へのリンク。**空なら取れなかった**——
     #: 呼ぶ側が画面に出す（静かにしない）。
     permalink: str = ""
+    #: スレッドの返信の読み取り結果（``--include-replies`` のときだけ中身が入る）。
+    replies: slack_read.RepliesFetched = field(default_factory=slack_read.RepliesFetched)
+    #: 見張る窓から落ちた親。**この親に後から付く返信は二度と読まれない。**
+    dropped_threads: tuple[str, ...] = ()
+    #: いま見張っているスレッドの本数。**記録から読まない**——記録は送信に
+    #: 成功したときしか作られず、dry-run の画面が「? 本」になる。
+    #: 出せる値を「分からない」と表示すると、読んだ人は数えられない事情が
+    #: あると受け取る。実行画面は提出物なので、ここは必ず埋まる。
+    watching: int = 0
 
 
 # ------------------------------------------------------------------ 送る前の判定
@@ -191,6 +200,8 @@ def build_record(
     sent: line_send.Sent,
     usage_before: int,
     usage_after: int | None,
+    replies: slack_read.RepliesFetched | None = None,
+    reply_watch: dict | None = None,
 ) -> dict:
     """あとから照合するための記録を組む。
 
@@ -205,6 +216,14 @@ def build_record(
     **要約の本文そのものは残さない**——Slack の会話が公開物になるため。
     代わりに長さだけ残す。
     """
+    replies = replies or slack_read.RepliesFetched()
+
+    # **返信の側も、照合できる形で残す。**
+    #
+    # ``reply_watch`` は「どの親を、どこから読んだか」。これを残さないと
+    # ``reply_read_count`` を後から数え直せない——位置は次の実行のために
+    # 先へ進んでしまうので、**物差しは記録の側から取る**（本文の ``oldest``
+    # と同じ理由）。``None`` は「返信を読んでいない実行」で、0 件とは違う。
     return {
         "channel": channel,
         # **どこから読んだか。** 残さないと、あとから read_count を再現できない
@@ -224,6 +243,9 @@ def build_record(
         "pages": fetched.pages,
         "truncated": fetched.truncated,
         "latest_ts": fetched.latest_ts,
+        "reply_read_count": len(replies.messages),
+        "reply_failed": list(replies.failed),
+        "reply_watch": reply_watch,
         "summarized": summarized,
         "body_chars": len(body),
         "message_id": sent.message_id,
@@ -256,6 +278,7 @@ def run(
     state_path: str | Path,
     results_path: str | Path | None = None,
     dry_run: bool = False,
+    include_replies: bool = False,
     model: str = gemini_client.DEFAULT_MODEL,
     secrets: tuple = (),
 ) -> Outcome:
@@ -268,11 +291,40 @@ def run(
 
     fetched = slack_read.fetch_since(slack_client, channel=channel, oldest=oldest)
 
+    # ---- スレッドの返信（発展・2026-09-04）
+    #
+    # ``conversations.history`` は返信を1件も返さない（実測：親1・返信3を
+    # 投稿して history の増分は **+1**）。**例外は出ず、件数が減るだけ**なので、
+    # 受け取る側からは「議論が無かった」と見分けが付かない。
+    #
+    # **読んだメッセージは全部見張る。** 「いま返信を持っている親」だけに
+    # 絞ると、いちばん多い形——読んだ時点では返信ゼロで、あとから議論が
+    # 始まる形——を丸ごと取りこぼす。窓（``WATCH_LIMIT``）で頭打ちにする。
+    replies = slack_read.RepliesFetched()
+    dropped: tuple[str, ...] = ()
+    watching = 0
+    if include_replies:
+        current, dropped = state_module.watching(
+            current, channel, [m.ts for m in fetched.messages]
+        )
+        watch = state_module.watch_for(current, channel)
+        watching = len(watch)
+        replies = slack_read.fetch_replies(
+            slack_client,
+            channel=channel,
+            watch=watch,
+        )
+
+    messages = slack_read.in_time_order(list(fetched.messages) + list(replies.messages))
+    skipped = {**fetched.skipped}
+    for subtype, number in replies.skipped.items():
+        skipped[subtype] = skipped.get(subtype, 0) + number
+
     # ---- 要約するか（要らないなら呼ばない。呼べば課金される）
     summary = None
     summarized = False
-    if summarize.needs_summary(fetched.messages):
-        transcript = summarize.render_transcript(fetched.messages)
+    if summarize.needs_summary(messages):
+        transcript = summarize.render_transcript(messages)
         try:
             summary = gemini_client.generate(
                 gemini,
@@ -290,6 +342,9 @@ def run(
                 summarized=False,
                 gate=Gate(ok=False, blocks=("要約に失敗しました。",), notes=()),
                 error=str(error),
+                replies=replies,
+                dropped_threads=dropped,
+            watching=watching,
             )
         summarized = True
 
@@ -303,11 +358,12 @@ def run(
 
     body = summarize.build_message(
         summary=summary,
-        messages=fetched.messages,
+        messages=messages,
         channel_label=channel_label,
-        skipped=fetched.skipped,
-        truncated=fetched.truncated,
+        skipped=skipped,
+        truncated=fetched.truncated or replies.truncated,
         permalink=permalink,
+        reply_count=len(replies.messages),
     )
 
     gate = judge_send(reachability, remaining)
@@ -321,6 +377,9 @@ def run(
             summarized=summarized,
             gate=gate,
             permalink=permalink,
+            replies=replies,
+            dropped_threads=dropped,
+            watching=watching,
         )
 
     # **送る前の通数を先に取る。** 取れないなら送らない——増分を出せないと
@@ -336,6 +395,9 @@ def run(
             gate=gate,
             error=f"送信前の通数を読めませんでした（送信していません）。\n{error}",
             permalink=permalink,
+            replies=replies,
+            dropped_threads=dropped,
+            watching=watching,
         )
 
     try:
@@ -354,6 +416,9 @@ def run(
             gate=gate,
             error=str(error),
             permalink=permalink,
+            replies=replies,
+            dropped_threads=dropped,
+            watching=watching,
         )
 
     # ここから先は**送信済み**。失敗しても「送っていない」ことにはできない。
@@ -373,15 +438,27 @@ def run(
         sent=sent,
         usage_before=usage_before,
         usage_after=usage_after,
+        replies=replies,
+        reply_watch=(
+            state_module.watch_for(current, channel) if include_replies else None
+        ),
     )
     if results_path:
         write_record(results_path, record)
 
     # ---- **送信が成功した後にだけ位置を進める。**
+    #
+    # 本文と返信で位置を分けて持つ。返信の ts は親より後なので、返信で本文の
+    # 位置を進めると**親より後のチャンネル投稿を飛ばす**。
+    advanced = current
     if fetched.latest_ts:
-        state_module.save(
-            state_path, state_module.advanced(current, channel, fetched.latest_ts)
+        advanced = state_module.advanced(advanced, channel, fetched.latest_ts)
+    if include_replies:
+        advanced = state_module.replies_advanced(
+            advanced, channel, replies.latest_by_parent
         )
+    if fetched.latest_ts or include_replies:
+        state_module.save(state_path, advanced)
 
     return Outcome(
         sent=True,
@@ -391,6 +468,9 @@ def run(
         gate=gate,
         record=record,
         permalink=permalink,
+        replies=replies,
+        dropped_threads=dropped,
+        watching=watching,
     )
 
 
@@ -419,6 +499,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "LINE へ送らず、状態も書きません。"
             "**読み取りと要約は実行します**（Gemini の課金は発生します）"
+        ),
+    )
+    parser.add_argument(
+        "--include-replies",
+        action="store_true",
+        help=(
+            "スレッドの返信も読みます。conversations.history は返信を返さない"
+            "ので、これを付けないとスレッド内の議論は届きません。"
+            "見張る親は最大 %d 件（1実行あたり同じ回数だけ API を呼びます）"
+            % state_module.WATCH_LIMIT
         ),
     )
     return parser.parse_args(argv)
@@ -517,6 +607,7 @@ def main(argv: Sequence[str] | None = None, *, factory: Callable | None = None) 
             state_path=args.state,
             results_path=args.json_out,
             dry_run=args.dry_run,
+            include_replies=args.include_replies,
             secrets=deps.get("secrets", ()),
         )
     except (state_module.StateError, ToolError) as error:
@@ -528,6 +619,23 @@ def main(argv: Sequence[str] | None = None, *, factory: Callable | None = None) 
 
     fetched = outcome.fetched
     print(f"\n読んだ件数: {len(fetched.messages)} 件（{fetched.pages} ページ）")
+    if args.include_replies:
+        # **見張った数と拾えた数を両方出す。** 「返信 0 件」は正常値なので、
+        # 何本のスレッドを見に行ったうえでの 0 なのかが分からないと、
+        # 「動いていない」と区別が付かない。
+        print(
+            f"スレッドの返信: {len(outcome.replies.messages)} 件"
+            f"（見張っているスレッド {outcome.watching} 本）"
+        )
+        for parent in outcome.replies.failed:
+            # **静かにしない。** 取れなかった親の位置は進めていないので
+            # 次回また試すが、鳴らないと「返信が無かった」と読まれる。
+            print(f"  読めなかったスレッド: {parent}（次回また試します）")
+        for parent in outcome.dropped_threads:
+            # **落ちた親に後から付く返信は二度と読まれない。**
+            print(f"  見張りから外れたスレッド: {parent}（以後の返信は届きません）")
+        if outcome.replies.truncated:
+            print("  返信の取得を上限で打ち切りました。続きが残っています")
     for subtype, number in sorted(fetched.skipped.items()):
         print(f"  除外: {subtype} {number} 件")
     if fetched.truncated:

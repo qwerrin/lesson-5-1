@@ -79,10 +79,29 @@ def render_transcript(messages: list[SlackMessage]) -> str:
     """要約に渡す／そのまま送る形に整える。
 
     ユーザーは ID のまま出す（上記のとおり表示名は引けない）。
+
+    **スレッドの返信には印を付ける。** 返信は ``conversations.history`` に
+    出ないので（2026-09-04 実測）、受け取った人が Slack を開いても
+    チャンネル本文には並んでいない。印が無いと、どれがチャンネルの発言で
+    どれがスレッドの中の発言かを**復元できない**。
+
+    返信かどうかは ``thread_ts`` と ``ts`` の比較で決める（公式の見分け方）。
+    **等しければ親**であって返信ではない。
     """
     return "\n".join(
-        f"{m.user}: {unescape_slack(m.text)}" for m in messages
+        f"{'↳ ' if is_reply(m) else ''}{m.user}: {unescape_slack(m.text)}"
+        for m in messages
     )
+
+
+def is_reply(message: SlackMessage) -> bool:
+    """スレッドの返信か。**親を返信と数えない。**
+
+    公式の見分け方は「``thread_ts`` と ``ts`` が等しければ親、違えば返信」。
+    ``thread_ts`` の有無だけで決めると、**親まで返信として数えて**
+    件数の内訳が狂う。
+    """
+    return bool(message.thread_ts) and message.thread_ts != message.ts
 
 
 def needs_summary(messages: list[SlackMessage]) -> bool:
@@ -130,6 +149,7 @@ def build_message(
     skipped: dict[str, int] | None = None,
     truncated: bool = False,
     permalink: str = "",
+    reply_count: int = 0,
 ) -> str:
     """LINE に送る本文を組む。
 
@@ -145,7 +165,14 @@ def build_message(
     「原文はこちら」は冗長で、リンクの意味を薄める。
     """
     count = len(messages)
-    lines = [f"【{channel_label}】新着 {count} 件"]
+    # **返信の件数は内訳として出す。** 受け取った人が Slack を開いても、
+    # 返信はチャンネル本文に並んでいない（``conversations.history`` に
+    # 出ないため・2026-09-04 実測）。合計だけ出すと「5件と書いてあるのに
+    # 2件しか見えない」になり、**この本文が数えた根拠を追えなくなる**。
+    headline = f"【{channel_label}】新着 {count} 件"
+    if reply_count:
+        headline += f"（うちスレッド返信 {reply_count} 件）"
+    lines = [headline]
 
     if count == 0:
         lines.append("投稿はありませんでした。")

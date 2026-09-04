@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import subprocess
 import sys
@@ -34,12 +35,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 TASK = ROOT / "task1"
+HERE = Path(__file__).resolve().parent
 if str(TASK) not in sys.path:
     sys.path.insert(0, str(TASK))
 
 from common import env_file, gemini_client, line_auth, slack_auth  # noqa: E402
 
 import slack_read  # noqa: E402
+import state  # noqa: E402
 import summarize  # noqa: E402
 import summarize_to_line  # noqa: E402
 
@@ -286,6 +289,35 @@ def main() -> int:
         results,
         "task1/README.md" in root_readme,
         "ルート README が task1 を指している",
+    )
+
+    # ---- 9. わざと壊す箇所の数が README と一致する
+    #
+    # **この数は増える。** 発展を1つ足したら壊しかたも足すのに、README は
+    # 古い数のまま残る——目視では絶対に出ない食い違いなので機械に数えさせる。
+    # （課題10 で「照合 38 項目」の 38 を誰も確かめていない状態を作った。）
+    spec = importlib.util.spec_from_file_location("mutate_mod", HERE / "mutate.py")
+    mutate_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mutate_mod)
+    mutation_count = len(mutate_mod.MUTATIONS)
+    # **単位まで見る。** 数字だけを探すと、無関係な数字に当たって通ってしまう
+    # （実際 ``str(20) in readme`` が「月200通」に当たった）。
+    check(
+        results,
+        f"{mutation_count} か所" in readme,
+        f"わざと壊す箇所 {mutation_count} か所が README と一致",
+    )
+
+    # ---- 10. 発展（スレッドの返信）の定数と入口が README と一致する
+    check(
+        results,
+        f"{state.WATCH_LIMIT} 本" in readme,
+        f"見張るスレッドの上限 {state.WATCH_LIMIT} 本が README と一致",
+    )
+    check(
+        results,
+        "--include-replies" in readme,
+        "README が --include-replies の入口を書いている",
     )
 
     # ---- 8. 自分の項目数（**最後に積む**）

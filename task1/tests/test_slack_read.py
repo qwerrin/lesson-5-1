@@ -391,3 +391,40 @@ class Request(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TimestampOrdering(unittest.TestCase):
+    """``ts`` を**数として**並べる。
+
+    2026-09-04 に見つけた。それまで文字列で並べていて、桁数が違うと
+    ``"10" < "2"`` になる。本物の Slack の ``ts`` は桁が揃っているので実害は
+    出ていなかったが、狂うのは並びだけではない——**``latest_ts``（＝次回の
+    起点）まで狂う**ので、位置が飛んで静かに取りこぼす。
+
+    見つけたのは発展（スレッドの返信）のテストである。返信を見張る窓が
+    読んだ順に並ぶので、順序の狂いが目に見える形で出た。
+    **穴は、その穴を狙っていない場所から出てくる。**
+    """
+
+    def test_digit_count_does_not_reverse_the_order(self):
+        client = FakeClient([page([message("10.0"), message("9.0"), message("2.0")])])
+
+        result = slack_read.fetch_since(client, channel=CHANNEL)
+
+        self.assertEqual([m.ts for m in result.messages], ["2.0", "9.0", "10.0"])
+
+    def test_latest_ts_is_the_numerically_largest(self):
+        """**位置に効く。** ここを間違えると、次回その先を読み飛ばす。"""
+        client = FakeClient([page([message("10.0"), message("9.0")])])
+
+        result = slack_read.fetch_since(client, channel=CHANNEL)
+
+        self.assertEqual(result.latest_ts, "10.0")
+
+    def test_unreadable_ts_goes_last_not_dropped(self):
+        """読めない ``ts`` は落とさない。**知らないものを黙って捨てない。**"""
+        client = FakeClient([page([message("ts ではない"), message("10.0")])])
+
+        result = slack_read.fetch_since(client, channel=CHANNEL)
+
+        self.assertEqual([m.ts for m in result.messages], ["10.0", "ts ではない"])

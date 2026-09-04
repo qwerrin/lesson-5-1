@@ -185,3 +185,115 @@ class Save(TempPath):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThreadWatch(TempPath):
+    """スレッドの「どの親を、どこまで読んだか」。
+
+    チャンネル本文の位置（``cursors``）では代用できない。返信の ts は親より
+    後なので、返信で本文の位置を進めると**親より後のチャンネル投稿を飛ばす**。
+    だから位置を親ごとに分けて持つ。
+
+    見張る親は**増え続ける**ので窓で切る。**切ったことは静かにしない**——
+    落ちた親の返信は二度と読まれないので、呼ぶ側が画面に出せる形で返す。
+    """
+
+    def test_old_file_without_threads_still_loads(self):
+        """``threads`` を持たない状態ファイルを読める。
+
+        この欄は後から足した。**古いファイルで止まると、位置を見失った扱いに
+        なって全履歴を読み直す**——月200通の枠と Gemini の課金が動く。
+        """
+        path = self.path
+        path.write_text('{"cursors": {"C1": "100"}}', encoding="utf-8")
+
+        current = state.load(path)
+
+        self.assertEqual(current.cursors, {"C1": "100"})
+        self.assertEqual(state.watch_for(current, "C1"), {})
+
+    def test_threads_must_be_a_mapping(self):
+        path = self.path
+        path.write_text('{"cursors": {}, "threads": []}', encoding="utf-8")
+
+        with self.assertRaises(state.StateError):
+            state.load(path)
+
+    def test_threads_per_channel_must_be_a_mapping(self):
+        path = self.path
+        path.write_text('{"cursors": {}, "threads": {"C1": "x"}}', encoding="utf-8")
+
+        with self.assertRaises(state.StateError):
+            state.load(path)
+
+    def test_reply_position_must_be_a_string(self):
+        """数値で入っていたら黙って文字列化しない（``cursors`` と同じ判断）。"""
+        path = self.path
+        path.write_text('{"cursors": {}, "threads": {"C1": {"1.1": 2}}}', encoding="utf-8")
+
+        with self.assertRaises(state.StateError):
+            state.load(path)
+
+    def test_watching_adds_new_parents(self):
+        current, dropped = state.watching(state.empty(), "C1", ["10.1", "20.2"])
+
+        self.assertEqual(state.watch_for(current, "C1"), {"10.1": "", "20.2": ""})
+        self.assertEqual(dropped, ())
+
+    def test_watching_keeps_what_was_already_read(self):
+        """既に読んだ位置を**上書きしない**。上書きすると返信を読み直して重複する。"""
+        first = state.replies_advanced(
+            state.watching(state.empty(), "C1", ["10.1"])[0], "C1", {"10.1": "11.5"}
+        )
+
+        second, _ = state.watching(first, "C1", ["10.1", "20.2"])
+
+        self.assertEqual(state.watch_for(second, "C1"), {"10.1": "11.5", "20.2": ""})
+
+    def test_window_drops_the_oldest_and_says_which(self):
+        """窓を超えたら古い親から落ちる。**落ちた ts を返す。**"""
+        parents = [f"{i}.0" for i in range(1, state.WATCH_LIMIT + 3)]
+
+        current, dropped = state.watching(state.empty(), "C1", parents)
+
+        self.assertEqual(len(state.watch_for(current, "C1")), state.WATCH_LIMIT)
+        self.assertEqual(dropped, ("1.0", "2.0"))
+
+    def test_window_keeps_the_newest(self):
+        parents = [f"{i}.0" for i in range(1, state.WATCH_LIMIT + 3)]
+
+        current, _ = state.watching(state.empty(), "C1", parents)
+
+        self.assertIn(f"{state.WATCH_LIMIT + 2}.0", state.watch_for(current, "C1"))
+
+    def test_channels_do_not_share_a_window(self):
+        current, _ = state.watching(state.empty(), "C1", ["10.1"])
+        current, _ = state.watching(current, "C2", ["20.2"])
+
+        self.assertEqual(state.watch_for(current, "C1"), {"10.1": ""})
+        self.assertEqual(state.watch_for(current, "C2"), {"20.2": ""})
+
+    def test_replies_advanced_does_not_mutate_the_original(self):
+        """**元を書き換えない。** 送信に失敗した経路で進んだ値が残ると取りこぼす。"""
+        before, _ = state.watching(state.empty(), "C1", ["10.1"])
+
+        state.replies_advanced(before, "C1", {"10.1": "11.5"})
+
+        self.assertEqual(state.watch_for(before, "C1"), {"10.1": ""})
+
+    def test_replies_advanced_ignores_parents_we_are_not_watching(self):
+        """見張っていない親を勝手に足さない。窓の意味が消える。"""
+        before, _ = state.watching(state.empty(), "C1", ["10.1"])
+
+        after = state.replies_advanced(before, "C1", {"99.9": "100.0"})
+
+        self.assertEqual(state.watch_for(after, "C1"), {"10.1": ""})
+
+    def test_round_trip_through_the_file(self):
+        path = self.path
+        current, _ = state.watching(state.empty(), "C1", ["10.1"])
+        current = state.replies_advanced(current, "C1", {"10.1": "11.5"})
+
+        state.save(path, current)
+
+        self.assertEqual(state.watch_for(state.load(path), "C1"), {"10.1": "11.5"})

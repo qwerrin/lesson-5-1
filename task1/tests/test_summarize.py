@@ -246,3 +246,49 @@ class BuildMessage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def reply_msg(ts, parent, text, user="U2"):
+    return SlackMessage(ts=ts, user=user, text=text, thread_ts=parent)
+
+
+def parent_msg(ts, text, user="U1"):
+    """スレッドの**親**。``thread_ts`` は自分の ``ts`` と等しい。"""
+    return SlackMessage(ts=ts, user=user, text=text, thread_ts=ts)
+
+
+class IsReply(unittest.TestCase):
+    """返信かどうかの見分け。**親を返信と数えない。**
+
+    公式の見分け方は「``thread_ts`` と ``ts`` が等しければ親、違えば返信」。
+    ``thread_ts`` の有無だけで決めると、**親まで返信として数える**。
+    親はチャンネル本文にも出ているので、印を付けると
+    「Slack で見えているのに返信と書いてある」という食い違いになる。
+    """
+
+    def test_plain_message_is_not_a_reply(self):
+        self.assertFalse(summarize.is_reply(msg("100", "本文")))
+
+    def test_thread_parent_is_not_a_reply(self):
+        self.assertFalse(summarize.is_reply(parent_msg("100", "親")))
+
+    def test_thread_reply_is_a_reply(self):
+        self.assertTrue(summarize.is_reply(reply_msg("101", "100", "返信")))
+
+
+class TranscriptMarks(unittest.TestCase):
+    def test_reply_is_marked(self):
+        text = summarize.render_transcript([reply_msg("101", "100", "あとから")])
+
+        self.assertTrue(text.startswith("↳ "))
+
+    def test_parent_is_not_marked(self):
+        """**親に印を付けない。** 付けると内訳が狂う。"""
+        text = summarize.render_transcript([parent_msg("100", "はじめ")])
+
+        self.assertFalse(text.startswith("↳"))
+
+    def test_plain_message_is_not_marked(self):
+        text = summarize.render_transcript([msg("100", "ふつう")])
+
+        self.assertFalse(text.startswith("↳"))

@@ -49,6 +49,7 @@ STATE = "task1/state.py"
 TOOL = "task1/summarize_to_line.py"
 GEMINI = "common/gemini_client.py"
 SEND = "common/line_send.py"
+VERIFY = "task1/verify_summary.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", "docs", "*.png", "node_modules"
@@ -472,6 +473,24 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         '見張っている本数を数えない（dry-run の画面が 0 本になる）',
         '        watching = len(watch)',
         '        watching = 0',
+    ),
+    (
+        VERIFY,
+        '返信を読んでいない実行にも照合項目を作る（確かめていないことが一致に化ける）',
+        '    if "reply_watch" not in payload or payload.get("reply_watch") is None:',
+        '    if False:',
+    ),
+    (
+        VERIFY,
+        '数え直せなかった返信を「一致」として扱う',
+        '    if reply_count is None:',
+        '    if False:',
+    ),
+    (
+        VERIFY,
+        '記録ではなく空の見張りから数え直す（物差しを記録の側から取らない）',
+        '    watch = payload.get("reply_watch")',
+        '    watch = {}',
     ),
 ]
 

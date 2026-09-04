@@ -63,15 +63,28 @@ def bot_info(basic_id=BASIC_ID, user_id=BOT_USER_ID):
 
 
 class FakeSlack:
-    def __init__(self, messages):
+    def __init__(self, messages, *, replies=None):
         self._messages = messages
+        self._replies = {k: list(v) for k, v in (replies or {}).items()}
         self.calls = []
+        self.reply_calls = []
 
     def conversations_history(self, **kwargs):
         self.calls.append(kwargs)
         return {
             "ok": True,
             "messages": list(self._messages),
+            "response_metadata": {"next_cursor": ""},
+        }
+
+    def conversations_replies(self, **kwargs):
+        """**返信は history に出さない。** 本物がそうだから（2026-09-04 実測）。"""
+        self.reply_calls.append(kwargs)
+        ts = kwargs.get("ts")
+        parent = {"ts": ts, "text": "親", "user": "U1", "thread_ts": ts}
+        return {
+            "ok": True,
+            "messages": [parent] + list(self._replies.get(ts, [])),
             "response_metadata": {"next_cursor": ""},
         }
 
@@ -262,3 +275,67 @@ class LoadResults(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplyRecount(unittest.TestCase):
+    """返信の件数も**別経路で数え直す**。
+
+    数え直せるのは、記録に ``reply_watch``（どの親をどこから読んだか）を
+    残してあるからである。**物差しは記録の側から取る**——いまの状態ファイルは
+    次の実行のために先へ進んでいるので、使うと別の答えになる。
+
+    **「返信を読んでいない実行」と「返信が0件だった実行」を混ぜない。**
+    前者は照合の対象外で、後者は 0 と一致すべき値である。同じ 0 に畳むと、
+    ``--include-replies`` を付け忘れた実行が「返信0件で一致」として通る。
+    """
+
+    def test_missing_watch_means_not_measured(self):
+        self.assertIsNone(verify.recount_replies(object(), {"channel": "C1"}))
+
+    def test_empty_watch_is_zero_not_unmeasured(self):
+        """空の見張りは**測れている**。0 件という答えが出る。"""
+        client = FakeSlack([])
+
+        self.assertEqual(
+            verify.recount_replies(client, {"channel": "C1", "reply_watch": {}}), 0
+        )
+
+    def test_counts_replies_from_the_recorded_positions(self):
+        client = FakeSlack([], replies={"100": [{"ts": "101", "text": "返信", "user": "U1",
+                                                 "thread_ts": "100"}]})
+
+        count = verify.recount_replies(
+            client, {"channel": "C1", "reply_watch": {"100": ""}}
+        )
+
+        self.assertEqual(count, 1)
+
+    def test_unmeasured_is_not_reported_as_a_match(self):
+        """数え直せなかったことを「一致」にしない（読んだ件数と同じ判断）。"""
+        checks = verify.build_reply_checks(
+            {"reply_read_count": 3, "reply_watch": {"100": ""}}, None
+        )
+
+        self.assertTrue(checks)
+        self.assertFalse(all(check.ok for check in checks))
+
+    def test_missing_both_sides_is_not_a_match(self):
+        """**両方欠けている記録を「一致」にしない。**
+
+        件数のキーが無い古い記録では期待値も ``None`` になる。数え直しも
+        ``None`` なら、素朴に比べると ``None == None`` で**一致してしまう**——
+        1件も確かめていないのに緑になる。
+
+        上の test だけでは足りなかった（期待 3 と実際 ``None`` がたまたま
+        食い違うので、比較に落としても不一致のままだった）。
+        **「数え直せなかった」を一致にする改変が素通りした。**
+        """
+        checks = verify.build_reply_checks({"reply_watch": {"100": ""}}, None)
+
+        self.assertEqual(len(checks), 1)
+        self.assertFalse(checks[0].ok)
+        self.assertIn("数え直せなかった", str(checks[0].actual))
+
+    def test_no_reply_checks_when_the_run_did_not_read_replies(self):
+        """返信を読んでいない実行に、返信の照合項目を作らない。"""
+        self.assertEqual(verify.build_reply_checks({}, None), [])

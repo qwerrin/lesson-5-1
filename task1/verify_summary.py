@@ -183,6 +183,52 @@ def build_remote_checks(
     return checks
 
 
+def build_reply_checks(payload: dict, reply_count: int | None) -> list[Check]:
+    """スレッドの返信の照合。**読んでいない実行には項目を作らない。**
+
+    ``reply_watch`` が無い記録は「返信を読んでいない実行」であって
+    「返信が0件だった実行」ではない。同じ 0 に畳むと、``--include-replies``
+    を付け忘れた実行が「返信0件で一致」として通る——**確かめていないことが、
+    確かめて一致したことに化ける。**
+    """
+    if "reply_watch" not in payload or payload.get("reply_watch") is None:
+        return []
+
+    if reply_count is None:
+        # 数え直せなかったことを「一致」にしない（読んだ件数と同じ判断）。
+        return [
+            Check(
+                label="スレッドの返信の件数",
+                expected=payload.get("reply_read_count"),
+                actual="(Slack から数え直せなかった)",
+                ok=False,
+            )
+        ]
+
+    return [
+        _compare("スレッドの返信の件数", payload.get("reply_read_count"), reply_count)
+    ]
+
+
+def recount_replies(client, payload: dict) -> int | None:
+    """記録した ``reply_watch`` から返信を数え直す。
+
+    **物差しは記録の側から取る。** いまの状態ファイルは次の実行のために
+    先へ進んでいるので、それを使うと別の答えになる（``oldest`` と同じ理由）。
+
+    **無いのを 0 と読まない。** 無いのは「返信を読んでいない実行」で、
+    0 は「見張ったうえで返信が無かった」——直しかたが正反対になる。
+    """
+    watch = payload.get("reply_watch")
+    if not isinstance(watch, dict):
+        return None
+
+    fetched = slack_read.fetch_replies(
+        client, channel=str(payload.get("channel") or ""), watch=watch
+    )
+    return len(fetched.messages)
+
+
 def recount(client, payload: dict) -> int | None:
     """Slack を**記録した ``oldest`` から**数え直す。
 
@@ -277,7 +323,14 @@ def main(argv: Sequence[str] | None = None, *, factory: Callable | None = None) 
         print(f"\nSlack から数え直せませんでした: {error}", file=sys.stderr)
         slack_count = None
 
+    try:
+        reply_count = recount_replies(deps["slack_client"], payload)
+    except Exception as error:  # noqa: BLE001 - 数え直せないことも結果のうち
+        print(f"\n返信を数え直せませんでした: {error}", file=sys.stderr)
+        reply_count = None
+
     remote = build_remote_checks(payload, deps["bot_info"], slack_count)
+    remote += build_reply_checks(payload, reply_count)
     print("\n別のエンドポイントと突き合わせた結果:")
     for line in format_checks(remote):
         print(line)

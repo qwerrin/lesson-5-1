@@ -12,6 +12,14 @@ token.json
 *client_secret*.json
 token*.json
 
+# 課題2 のサービスアカウント鍵。**上のパターンでは1つも当たらない。**
+# `service-account.json` に `credentials` も `client_secret` も `token` も
+# 含まれないため。「資格情報だから当然除外されているはず」で流すと素通りする
+# ——パターンは意味ではなく名前でしか照合しない（2026-09-06 に実際に確認して追加）。
+service-account.json
+*service-account*.json
+*service_account*.json
+
 # 課題4（Zoom）の Server-to-Server OAuth の資格情報。
 # Account ID / Client ID / Client Secret を環境変数で渡すため。
 .env

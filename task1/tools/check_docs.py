@@ -10,7 +10,7 @@
 
 1. README のテスト件数が pytest の実測と一致する
 2. README が書いている閾値・既定値が実装の定数と一致する
-3. **追跡されるファイルに本物の資格情報が入っていない**
+3. **これから公開されうるファイルに本物の資格情報が入っていない**
 4. ``.env.example`` の変数名が実装の定数と一致する
 5. README が名前を出しているファイルが実在する
 6. README のコマンドが壊れていない（タブ化・存在しないパス）
@@ -73,10 +73,22 @@ SELF_COUNT_PATTERN = r"照合\s*\*\*(\d+)\*\*\s*項目"
 #: **ダミーを本物から離すことと、網を本物に寄せることは両輪。** 片方だけだと、
 #: 本物を貼ってしまった日に気づけない（網が広いと毎回鳴るので無視するようになり、
 #: ダミーが本物そっくりだと網を狭めた瞬間に本物も抜ける）。
+#: **課題2（2026-09-06）で2つ足した。** サービスアカウントの鍵を扱い始めたため。
+#: それまでの網は Slack / Gemini / LINE の3つで、**PEM 秘密鍵を知らなかった**
+#: （`lesson-4-3-2` の課題1〜10 まで遡っても1つも無い。サービスアカウントを
+#: 使う課題が今まで無かったからである）。
+#:
+#: 実際に踏んだ: Google からダウンロードした鍵の既定のファイル名は
+#: `<プロジェクトID>-<16進>.json` で、`.gitignore` の
+#: `*credentials*.json` にも `*service-account*.json` にも**当たらない**。
+#: **未追跡かつ無視もされていない**状態で public リポジトリの作業ツリーに置かれ、
+#: この検査は「問題なし」と答えた。
 SECRET_PATTERNS = (
     ("Slack Bot Token", re.compile(r"xoxb-[A-Za-z0-9]+-[A-Za-z0-9]+-[A-Za-z0-9]{20,}")),
     ("Gemini API キー", re.compile(r"\bAQ\.[A-Za-z0-9_-]{40,}")),
     ("LINE チャネルアクセストークン", re.compile(r"[A-Za-z0-9+/]{100,}=")),
+    ("PEM 秘密鍵", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("サービスアカウント鍵", re.compile(r'"type"\s*:\s*"service_account"')),
 )
 
 
@@ -134,14 +146,32 @@ def collect_count(target: str) -> int:
     return int(match.group(1))
 
 
-def tracked_files() -> list[Path]:
-    """git が追跡しているファイル。**検査の対象をここから取る。**
+def publishable_files() -> list[Path]:
+    """**これから公開されうるファイル。** 検査の対象をここから取る。
 
     ディレクトリを歩いて集めると ``.venv`` や ``__pycache__`` まで拾い、
     「本物の資格情報が入っていないか」の検査が的外れになる。
+
+    **``git ls-files`` だけでは足りない。** それは「すでに追跡しているもの」で、
+    **一番危ないのは「まだ追跡していないが、無視もされていない」ファイル**である。
+    その状態のファイルは ``git add -A`` ひとつで公開に入るのに、
+    狭い走査では1度も読まれない。
+
+    2026-09-06 に実際に踏んだ。サービスアカウントの鍵が既定のファイル名のまま
+    置かれ、``.gitignore`` のどのパターンにも当たらず、この検査は
+    「問題なし」と答えた。**読んでいないものについて、無いとは言えない。**
+
+    ``--others --exclude-standard`` を足すと、無視されていない未追跡ファイルが
+    対象に入る。``--exclude-standard`` があるので ``.gitignore`` 済みのものは
+    入らない——**それは正しい**。公開されないものを見る必要はなく、
+    危険なのは「無視されていない」ほうだからである。
+
+    この範囲は ``lesson-4-3-2`` の課題6で一度実装されたが、課題9のコピーで
+    狭い側に戻り、そのまま課題10とこのリポジトリまで引き継がれていた。
+    **1度塞いだ穴が、コピーのたびに開き直っていた。**
     """
     result = subprocess.run(
-        ["git", "ls-files"],
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -201,18 +231,18 @@ def main() -> int:
     for subtype in sorted(slack_read.EXCLUDED_SUBTYPES):
         check(results, subtype in readme, f"除外する subtype {subtype} が README に載っている")
 
-    # ---- 3. 追跡されるファイルに本物の資格情報が入っていない
+    # ---- 3. これから公開されうるファイルに本物の資格情報が入っていない
     #
     # **値は出力しない。** 出すとこの画面自体が漏洩経路になる。
     try:
-        files = tracked_files()
+        files = publishable_files()
     except Failure as error:
         print(error, file=sys.stderr)
         return 2
 
     if not files:
         # **0 件を「問題なし」にしない。** 数えられていないだけかもしれない。
-        check(results, False, "git が追跡するファイルを1件も取得できなかった")
+        check(results, False, "git から検査対象を1件も取得できなかった")
     else:
         hits: list[str] = []
         for path in files:
@@ -228,7 +258,7 @@ def main() -> int:
         check(
             results,
             not hits,
-            f"追跡ファイル {len(files)} 件に資格情報らしき文字列が無い"
+            f"公開されうるファイル {len(files)} 件に資格情報らしき文字列が無い"
             + ("" if not hits else "： " + " / ".join(hits)),
         )
 

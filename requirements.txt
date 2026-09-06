@@ -8,3 +8,10 @@ google-genai==2.20.0
 # .env を読む。os.environ とは混ぜない（common/env_file.py を参照）。
 python-dotenv==1.2.3
 pytest==9.1.1
+# 課題2（EC → スプレッドシート）の Google 認証と Sheets 書き込み。
+# **版は lesson-4-3-2 に揃える。** common/google_auth.py をそこから
+# コードを1行も変えずに移したので、動いていた組み合わせを崩さないため。
+google-api-python-client==2.198.0
+google-auth==2.56.3
+google-auth-httplib2==0.4.1
+google-auth-oauthlib==1.4.0

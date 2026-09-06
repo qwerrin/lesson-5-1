@@ -20,7 +20,9 @@ common/          課題をまたいで使う部品
   line_auth.py     LINE チャネルアクセストークン＋送信前の確認
   line_send.py     LINE への送信（課題9から格上げ）
   gemini_client.py Gemini（この Section で新規）
+  google_auth.py   Google OAuth（lesson-4-3-2 から移植。実装もテストも無改変）
 task1/           課題1
+task2/           課題2（設計中。DESIGN.md のみ）
 ```
 
 ### `common/line_send.py` は課題9からの格上げ
@@ -60,3 +62,14 @@ python -m venv .venv
 ```powershell
 .venv\Scripts\python.exe -m pytest task1\tests common\tests -q
 ```
+
+**2026-09-06 時点で 369 件**（課題1が 355 件 ＋ `common/google_auth.py` の移植分 14 件）。
+
+> 後片付けで `PermissionError: [WinError 5] ... pytest-current` が出ることがある。
+> **テストの失敗ではない**——共有の一時ディレクトリ（`%TEMP%\pytest-of-<user>`）に
+> pytest が張るシンボリックリンクを消せないだけで、判定はその前に終わっている。
+> 邪魔なら一時ディレクトリを分ける:
+>
+> ```powershell
+> .venv\Scripts\python.exe -m pytest task1\tests common\tests -q --basetemp .pytest_tmp
+> ```

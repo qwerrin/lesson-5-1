@@ -7,8 +7,8 @@ Section 4-3 の [`lesson-4-3-2`](https://github.com/qwerrin/lesson-4-3-2) とは
 
 | 課題 | 場所 | 状態 |
 |---|---|---|
-| 1 Slack の情報を取得・要約して LINE に送るツール | [`task1/`](task1/README.md) | 実装・テスト・実機確認まで完了。**発展（スレッドの返信も読む）を実装済み** |
-| 2 EC サイト → Google スプレッドシート | — | 未着手 |
+| 1 Slack の情報を取得・要約して LINE に送るツール | [`task1/`](task1/README.md) | **2026-09-06 合格。** 実装・テスト・実機確認・発展（スレッドの返信も読む）まで完了 |
+| 2 EC サイト → Google スプレッドシート | [`task2/DESIGN.md`](task2/DESIGN.md) | **設計中。** 実装前に「何を見ていないか」を出した段階。コードはまだ0行。次は楽天APIの疎通確認1発 |
 | 3 Google Meet 録音 → 議事録 → Google ドキュメント | — | 未着手 |
 
 ## 構成

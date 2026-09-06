@@ -3,6 +3,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# pytest に --basetemp で渡す一時置き場。既定の %TEMP% を使うと後片付けで
+# PermissionError（共有のシンボリックリンクを消せない）が出るため、
+# README ではこちらへ逃がす手を案内している＝これからも毎回できる。
+.pytest_tmp/
+
 # 資格情報。public リポジトリなので、絶対に追跡させない。
 # credentials.json は OAuth クライアントのシークレット、
 # token.json は自分の Google アカウントのアクセス権そのもの。

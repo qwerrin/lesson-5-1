@@ -149,5 +149,19 @@ https://www.googleapis.com/auth/spreadsheets
 |---|---|
 | 設計 | ✅ [`DESIGN.md`](DESIGN.md)（実装前の「何を見ていないか」を含む） |
 | 楽天 API の疎通確認 | ✅ 2026-09-06。未確認だった4件が全部決着 |
-| Google 側の手作業 | ⬜ この文書の手順1〜6 |
-| 実装 | ⬜ 未着手 |
+| Google 側の手作業 | ✅ 2026-09-06。**書いて・読み返して・消すところまで実機で確認** |
+| 実装 `transform.py` | ✅ テスト **36 件**・わざと壊す検査 **14 か所すべて kill** |
+| 実装 `fetch_items.py` | ⬜ 楽天 API を叩く（間隔制御・429 の指数退避） |
+| 実装 `diff.py` | ⬜ 履歴の末尾との比較（値下がり判定） |
+| 実装 `to_sheet.py` | ⬜ CLI の皮 |
+| 実装 `verify_sheet.py` | ⬜ 別経路でシートを読み直して照合 |
+
+```powershell
+.venv\Scripts\python.exe -m pytest task2\tests -q
+.venv\Scripts\python.exe task2\tools\mutate.py
+```
+
+> **「テストが通った」を結論にしない。** `mutate.py` が実装を1か所ずつ壊して、
+> テストが落ちることを確かめる。**14 か所のうち1つは最初 素通りした**
+> ——「両方の語が残っている」という部分一致の確認では、
+> 改行を空白ではなく**削除**する実装を見分けられなかった。期待値を丸ごと固定して塞いだ。

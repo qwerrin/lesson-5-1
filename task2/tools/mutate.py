@@ -54,13 +54,17 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 TRANSFORM = "task2/transform.py"
 FETCH = "task2/fetch_items.py"
 DIFF = "task2/diff.py"
+TO_SHEET = "task2/to_sheet.py"
+SHEETS = "common/sheets_client.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", "docs", "*.png", "node_modules"
 )
 
-#: 課題2は common/ を壊さないので、回すのは課題2のテストだけでよい。
-TEST_PATHS = ("task2/tests",)
+#: **common/sheets_client.py も壊す**ので、その検査も回す。
+#: 範囲を広げ忘れると、壊したのにテストが1件も走らず「素通り」に見える
+#: ——判定が正しくても対象が空なら同じ緑になる。
+TEST_PATHS = ("task2/tests", "common/tests/test_sheets_client.py")
 
 # (対象ファイル, 壊した内容, 置換前, 置換後)
 MUTATIONS: list[tuple[str, str, str, str]] = [
@@ -392,14 +396,159 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "    return [compare_row(row, history) for row in current_rows]",
         "    return [c for c in (compare_row(row, history) for row in current_rows) if c.comparable]",
     ),
+    # ------------------------------------------------------------------ 書き込み層
+    #
+    # **公式ドキュメントを読まないと出てこない穴。** どれも書いた日は成功し、
+    # 壊れるのは読み戻す日・隣に何か置いた日・人が列をいじった日である。
+    (
+        SHEETS,
+        "書いた値を解釈させる（商品名が数式に、時刻が日付に化ける）",
+        'VALUE_INPUT_OPTION = "RAW"',
+        'VALUE_INPUT_OPTION = "USER_ENTERED"',
+    ),
+    (
+        SHEETS,
+        "既定の上書きで追記する（隣に置いたデータを潰す）",
+        'INSERT_DATA_OPTION = "INSERT_ROWS"',
+        'INSERT_DATA_OPTION = "OVERWRITE"',
+    ),
+    (
+        SHEETS,
+        "読み戻しで型を変える（価格が文字列になり、全比較が「価格が無い」になる）",
+        'VALUE_RENDER_OPTION = "UNFORMATTED_VALUE"',
+        'VALUE_RENDER_OPTION = "FORMATTED_VALUE"',
+    ),
+    (
+        SHEETS,
+        "見出しが違っても書く（列の意味が全部ズレる）",
+        '    if current == wanted:',
+        '    if True:',
+    ),
+    (
+        SHEETS,
+        "書かない指定でも見出しを書く",
+        "        if not create:",
+        "        if False:",
+    ),
+    (
+        SHEETS,
+        "末尾に落ちた空セルを補わない（15列で書いた行が14列で戻る）",
+        '    return [list(row) + [""] * max(0, width - len(row)) for row in rows]',
+        "    return rows",
+    ),
+    (
+        SHEETS,
+        "長い行を幅で切る（人が足した列を黙って隠す）",
+        '    return [list(row) + [""] * max(0, width - len(row)) for row in rows]',
+        '    return [(list(row) + [""] * max(0, width - len(row)))[:width] for row in rows]',
+    ),
+    (
+        SHEETS,
+        "空の応答で None を返す（呼ぶ側が落ちる）",
+        "    rows = values if isinstance(values, list) else []",
+        "    rows = values",
+    ),
+    (
+        SHEETS,
+        "書けた行数を確かめず送った行数を返す（部分書き込みが見えない）",
+        "    return AppendResult(sent=len(rows), updated=updated if isinstance(updated, int) else 0)",
+        "    return AppendResult(sent=len(rows), updated=len(rows))",
+    ),
+    (
+        SHEETS,
+        "長さのそろわない行をそのまま送る（シートは受け取ってしまう）",
+        "    if len(widths) != 1:",
+        "    if False:",
+    ),
+    (
+        SHEETS,
+        "見出しの範囲を固定文字列にする（列を足した日に古い範囲を読む）",
+        '    header_range = f"{sheet_name}!A1:{column_letter(len(wanted))}1"',
+        '    header_range = f"{sheet_name}!A1:D1"',
+    ),
+    (
+        TO_SHEET,
+        "watchlist の重複を落とさない（その商品だけ2行入る）",
+        "        (duplicates if code in codes else codes).append(code)",
+        "        codes.append(code)",
+    ),
+    (
+        TO_SHEET,
+        "落とした重複を黙って捨てる（入れたのに行が無い、と混同される）",
+        "        duplicates=list(duplicates),",
+        "        duplicates=[],",
+    ),
+    (
+        TO_SHEET,
+        "空の watchlist で正常終了する（0件を「動いた」と読ませる）",
+        "    if not codes:",
+        "    if False:",
+    ),
+    (
+        TO_SHEET,
+        "取得に失敗した商品を行にしない（5-B が最後の層で消える）",
+        "        if result.ok",
+        "        if True",
+    ),
+    (
+        TO_SHEET,
+        "見出しを確かめる前に取りに行く（書けないのに QPS を使う）",
+        "    header_state = sheets_client.ensure_header(",
+        "    header_state = \"未確認\" or sheets_client.ensure_header(",
+    ),
+    (
+        TO_SHEET,
+        "列数を指定せずに送る（ズレた行をシートが受け取る）",
+        "            expected_width=len(transform.COLUMNS),",
+        "",
+    ),
+    (
+        TO_SHEET,
+        "書かない指定でも書く",
+        "    if write:",
+        "    if True:",
+    ),
+    (
+        TO_SHEET,
+        "取得の失敗を終了コードに出さない（誰も見ていない時間に沈む）",
+        "        if self.fetched_failed:",
+        "        if False:",
+    ),
+    (
+        TO_SHEET,
+        "書き込み不足を終了コードに出さない",
+        "        if self.wrote and not self.ok:",
+        "        if False:",
+    ),
+    (
+        TO_SHEET,
+        "403 でも共有の案内を出さない（本文だけでは直せない）",
+        "    if status == 403:",
+        "    if False:",
+    ),
+    (
+        TO_SHEET,
+        "403 の判定を新しい形だけで見る（古い例外を取りこぼす）",
+        '        status = getattr(getattr(error, "resp", None), "status", None)',
+        "        status = None",
+    ),
+    (
+        TO_SHEET,
+        "書かなかったことを報告しない",
+        '        lines.append("書き込み       シートには1行も書いていません（--dry-run）")',
+        "        pass",
+    ),
 ]
 
 
 def run_tests(work: Path) -> bool:
     """写した側でテストを回す。1件でも落ちたら True。"""
     proc = subprocess.run(
+        # --basetemp を写した側の中に置く。既定の %TEMP% を使うと、後片付けで
+        # PermissionError（共有のシンボリックリンクを消せない）が出て、
+        # **壊す前から落ちている**ように見える（2026-09-08 に実際に踏んだ）。
         [str(PYTHON), "-m", "pytest", *TEST_PATHS, "-x", "-q", "--no-header",
-         "-p", "no:cacheprovider"],
+         "-p", "no:cacheprovider", "--basetemp", str(work / ".pytest_tmp")],
         cwd=work,
         capture_output=True,
         text=True,

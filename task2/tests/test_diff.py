@@ -141,6 +141,22 @@ class Test前回の行:
         found, _ = diff.previous_row(history, CODE, before=diff.parse_time(T3))
         assert price_of(found) == price_of(row(T1, price=13000))
 
+    def test_末尾が落ちた取得行でも前回に選べる(self):
+        """**実物のシートから読むと、この形で返ってくる**（2026-09-08 実測）。
+
+        取得できた行の末尾は `理由` が空なので、Google はその列を返さない。
+        15列で書いたものが14列で戻る。ここを弾くと、**成功した行だけが
+        前回候補から消えて、毎日「初回」になる**。
+        """
+        truncated = row(T1, price=13000)[:-1]        # 理由（末尾の空欄）が落ちた形
+        found, _ = diff.previous_row([truncated], CODE, before=diff.parse_time(T3))
+        assert found is not None
+
+    def test_末尾が落ちた行とも比較できる(self):
+        truncated = row(T1, price=13000)[:-1]
+        comparison = diff.compare_row(row(T2, price=12000), [truncated])
+        assert comparison.comparable is True
+
     def test_列が足りない行で落ちない(self):
         # 人が1列消すことがある。**ここで例外を出すと全商品の判定が止まる。**
         history = [["壊れた行"], row(T1, price=13000)]

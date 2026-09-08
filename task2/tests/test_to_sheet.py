@@ -70,10 +70,13 @@ class FakeExecutable:
 
 
 class FakeValues:
-    def __init__(self, header, history, updated=None):
+    def __init__(self, header, history, updated=None, corrupt=False):
         self._header = header
         self._history = history
         self._updated = updated
+        #: **書き込みは成功を返すのに、着地した中身が違う**状況を作る。
+        #: 相手が「書いた」と言うことと、そのとおりに入っていることは別。
+        self._corrupt = corrupt
         self.get_calls: list[dict] = []
         self.append_calls: list[dict] = []
 
@@ -86,6 +89,13 @@ class FakeValues:
         self.append_calls.append(kwargs)
         sent = len(kwargs["body"]["values"])
         updated = sent if self._updated is None else self._updated
+        # **書いたものが読めるようにする。** 読み直しの検査に要る——
+        # 書いても読めない偽物だと、照合が「行が足りない」で必ず落ちる。
+        stored = [list(r) for r in kwargs["body"]["values"]]
+        if self._corrupt:
+            for r in stored:
+                r[transform.COLUMNS.index("商品名")] = "別の商品に化けた"
+        self._history.extend(stored)
         return FakeExecutable({"updates": {"updatedRows": updated}})
 
 
@@ -155,9 +165,11 @@ def run(http, values, codes=(CODE_A,), **kwargs):
     )
 
 
-def values_with(history=(), header=None, updated=None):
+def values_with(history=(), header=None, updated=None, corrupt=False):
     header_rows = [list(transform.COLUMNS)] if header is None else header
-    return FakeValues(header_rows, [list(transform.COLUMNS), *history], updated=updated)
+    return FakeValues(
+        header_rows, [list(transform.COLUMNS), *history], updated=updated, corrupt=corrupt
+    )
 
 
 # ============================================================ 5-O / 5-P watchlist
@@ -388,6 +400,70 @@ class Test書かない指定:
 # ============================================================ 報告と終了コード
 
 
+class Test書いたあとの読み直し:
+    """**別の資格情報で読み直して照合する**（DESIGN 5-S）。
+
+    `to_sheet` から呼べないと、人が思い出したときにしか走らない。
+    """
+
+    def test_照合まで走る(self):
+        values = values_with()
+        result = run(
+            FakeHttp({CODE_A: ok_response(CODE_A)}), values,
+            verify_service=FakeService(values),
+        )
+        assert result.verification is not None
+        assert result.verification.compared_rows == 1
+
+    def test_照合を渡さなければ走らない(self):
+        # **走っていないことを、走ったふりで隠さない。**
+        values = values_with()
+        result = run(FakeHttp({CODE_A: ok_response(CODE_A)}), values)
+        assert result.verification is None
+
+    def test_書かないときは照合しない(self):
+        values = values_with()
+        result = run(
+            FakeHttp({CODE_A: ok_response(CODE_A)}), values,
+            write=False, verify_service=FakeService(values),
+        )
+        assert result.verification is None
+
+    def test_行数の帳尻を渡す(self):
+        # 追記が既存の行を上書きしていないか（5-U）は、前の数を渡さないと見られない。
+        values = values_with(history=[history_row(CODE_A)])
+        result = run(
+            FakeHttp({CODE_A: ok_response(CODE_A)}), values,
+            verify_service=FakeService(values),
+        )
+        assert result.verification.rows_before == 2  # 見出し + 履歴1行
+
+    def test_照合が失敗したら終了コードが1(self):
+        """**書き込みは成功を返している。** それでも着地が違えば失敗にする。
+
+        送った行数と入った行数が一致していると、書き込み側の検査は通る。
+        照合を終了コードに出さないと、**この回は成功として記録される**
+        （2026-09-09 のミューテーションで実際に素通りした）。
+        """
+        values = values_with(corrupt=True)
+        result = run(
+            FakeHttp({CODE_A: ok_response(CODE_A)}), values,
+            verify_service=FakeService(values),
+        )
+        assert result.ok is True            # 送った数 = 入った数
+        assert result.verification.ok is False
+        assert result.exit_code == 1
+
+    def test_報告に照合の行が出る(self):
+        values = values_with()
+        result = run(
+            FakeHttp({CODE_A: ok_response(CODE_A)}), values,
+            verify_service=FakeService(values),
+        )
+        text = chr(10).join(to_sheet.format_report(result))
+        assert "照合" in text and "セル" in text
+
+
 class Test報告:
     def test_件数がそろっていれば成功(self):
         values = values_with()
@@ -500,6 +576,19 @@ class TestCLI:
 
     def test_閾値を指定できる(self):
         assert to_sheet.build_parser().parse_args(["--threshold", "500"]).threshold == 500
+
+    def test_既定で照合する(self):
+        # **確かめないほうを既定にしない。** 確かめないなら、そう言って選ばせる。
+        assert to_sheet.build_parser().parse_args([]).no_verify is False
+
+    def test_照合を切れる(self):
+        assert to_sheet.build_parser().parse_args(["--no-verify"]).no_verify is True
+
+    def test_照合の説明が別の資格情報だと言う(self):
+        # usage 行にもオプション名が出るので、**説明が並ぶ側**を見る。
+        help_text = to_sheet.build_parser().format_help()
+        index = help_text.rindex("--no-verify")
+        assert "読み取り専用" in help_text[index:index + 300]
 
     def test_既定では書く(self):
         assert to_sheet.build_parser().parse_args([]).dry_run is False

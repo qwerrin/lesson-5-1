@@ -49,6 +49,7 @@ from typing import Any, Callable, Sequence
 import diff
 import fetch_items
 import transform
+import verify_sheet
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -90,6 +91,9 @@ class RunResult:
     stock_changed: list[str]
     duplicates: list[str]
     header_state: str
+    #: 書いたあとに**別の資格情報で読み直した**結果。走らせなければ None。
+    #: **走っていないことを、走ったふりで隠さない。**
+    verification: verify_sheet.VerifyResult | None = None
 
     @property
     def ok(self) -> bool:
@@ -99,6 +103,9 @@ class RunResult:
     @property
     def exit_code(self) -> int:
         if self.wrote and not self.ok:
+            return 1
+        # 相手が「書いた」と言っても、**着地していなければ失敗**。
+        if self.verification is not None and not self.verification.ok:
             return 1
         if self.fetched_failed:
             return 2
@@ -171,6 +178,7 @@ def run(
     threshold: int = 0,
     write: bool = True,
     duplicates: Sequence[str] = (),
+    verify_service: Any | None = None,
     **fetch_kwargs: Any,
 ) -> RunResult:
     """1回ぶんを通す。**外部への接続は引数で受け取る**ので、テストで再現できる。"""
@@ -203,6 +211,7 @@ def run(
 
     # 5. 追記する。
     appended = sheets_client.AppendResult(sent=0, updated=0)
+    verification: verify_sheet.VerifyResult | None = None
     if write:
         appended = sheets_client.append_rows(
             service,
@@ -211,6 +220,15 @@ def run(
             rows,
             expected_width=len(transform.COLUMNS),
         )
+        # 6. **別の資格情報で読み直して照合する**（DESIGN 5-S）。
+        #    書いたのと同じもので読むと、確かめる経路が1本になる。
+        #    `rows_before` を渡すのは、追記が既存の行を上書きしていないかを
+        #    見るため（DESIGN 5-U）——今回の行だけ見ていても気づけない。
+        if verify_service is not None:
+            verification = verify_sheet.verify_appended(
+                verify_service, spreadsheet_id, sheet_name, rows,
+                rows_before=len(history),
+            )
 
     return RunResult(
         requested=report.requested,
@@ -227,6 +245,7 @@ def run(
         stock_changed=[c.item_code for c in comparisons if c.stock_changed],
         duplicates=list(duplicates),
         header_state=header_state,
+        verification=verification,
     )
 
 
@@ -252,6 +271,9 @@ def format_report(result: RunResult) -> list[str]:
         # **「何をしないか」だけでなく「何をしたか」も言う。**
         lines.append("書き込み       シートには1行も書いていません（--dry-run）")
         lines.append("               ※ 楽天 API には投げています（QPS を消費しました）")
+
+    if result.verification is not None:
+        lines.extend(verify_sheet.format_report(result.verification))
 
     lines.append(f"値下がり       {len(result.drops)} 件")
     for comparison in result.drops:
@@ -333,6 +355,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threshold", type=int, default=0,
                         help="値下がりを知らせる下げ幅（円）。既定 0 は1円でも知らせる")
     parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help=(
+            "書いたあとの読み直しをしません。"
+            "既定では読み取り専用の資格情報でシートを読み直し、"
+            "書いた行がそのままの形で着地しているかを照合します。"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -373,6 +404,14 @@ def main(argv: Sequence[str] | None = None, *, out: Callable[[str], None] = prin
         credentials = sheets_client.load_credentials(key_path, [sheets_client.SCOPE_WRITE])
         service = sheets_client.build_service(credentials)
 
+        # **書く側とは別に認証する**（DESIGN 5-S）。同じものを使い回すと、
+        # 「書けたつもり」を「書けた」と確かめる経路が1本になる。
+        verify_service = (
+            None
+            if (args.no_verify or args.dry_run)
+            else verify_sheet.read_only_service(key_path)
+        )
+
         import requests  # 遅延 import。**資格情報の検査より後に読む**（失敗を早く見せる）
 
         with requests.Session() as session:
@@ -387,6 +426,7 @@ def main(argv: Sequence[str] | None = None, *, out: Callable[[str], None] = prin
                 sheet_name=args.sheet_name,
                 threshold=args.threshold,
                 write=not args.dry_run,
+                verify_service=verify_service,
             )
     except (ToSheetError, sheets_client.SheetError, env_file.EnvFileError) as error:
         out(str(error))

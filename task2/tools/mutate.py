@@ -55,6 +55,9 @@ TRANSFORM = "task2/transform.py"
 FETCH = "task2/fetch_items.py"
 DIFF = "task2/diff.py"
 TO_SHEET = "task2/to_sheet.py"
+#: **照合器も壊す。** 課題1では、ここが対象に入っていなかったせいで
+#: 「素通り0」が「守られている」ではなく「そこを見ていない」を意味していた。
+VERIFY = "task2/verify_sheet.py"
 SHEETS = "common/sheets_client.py"
 
 IGNORE = shutil.ignore_patterns(
@@ -537,6 +540,106 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "書かなかったことを報告しない",
         '        lines.append("書き込み       シートには1行も書いていません（--dry-run）")',
         "        pass",
+    ),
+    # ------------------------------------------------------------------ 照合層
+    #
+    # **照合器が壊れると、他の全部が壊れても緑になる。**
+    # ここだけは「壊したのにテストが落ちない」を絶対に残さない（DESIGN 5-T）。
+    (
+        VERIFY,
+        "0件でも一致と言う（比べていないのに合格になる）",
+        "        return bool(self.compared_rows) and not self.mismatches and not self.notes",
+        "        return not self.mismatches and not self.notes",
+    ),
+    (
+        VERIFY,
+        "書き込みスコープで読み直す（確かめる経路が書く経路と1本になる）",
+        "        key_path, [sheets_client.SCOPE_READ], **kwargs",
+        "        key_path, [sheets_client.SCOPE_WRITE], **kwargs",
+    ),
+    (
+        VERIFY,
+        "照合側も FORMATTED_VALUE で読む（書き込みの異常を照合の異常が打ち消す）",
+        "        service, spreadsheet_id, _data_range(sheet_name), width=len(transform.COLUMNS)",
+        "        service, spreadsheet_id, _data_range(sheet_name)",
+    ),
+    (
+        VERIFY,
+        "セルを比べない（照合が常に通る）",
+        "            if want[index] != got[index]:",
+        "            if False:",
+    ),
+    (
+        VERIFY,
+        "行数の帳尻を見ない（上書きされた古い行に気づけない）",
+        "    if rows_before is not None and rows_before + len(expected) != len(rows):",
+        "    if False:",
+    ),
+    (
+        VERIFY,
+        "行が足りなくても照合を続ける",
+        "    if len(data) < len(expected):",
+        "    if False:",
+    ),
+    (
+        VERIFY,
+        "見出しも照合の対象に入れる（末尾の空欄で毎回赤くなる）",
+        "    data = rows[1:]  # 見出しは照合の対象にしない",
+        "    data = rows",
+    ),
+    (
+        VERIFY,
+        "補ってから短い行を数える（必ず0になる＝鳴らない検査）",
+        "    raw = sheets_client.read_rows(service, spreadsheet_id, _data_range(sheet_name))",
+        "    raw = _read_all(service, spreadsheet_id, sheet_name)",
+    ),
+    (
+        VERIFY,
+        "点検で0行を異常なしと言う",
+        "            and bool(self.checked_rows)",
+        "            and True",
+    ),
+    (
+        VERIFY,
+        "点検で見出しの不一致を無視する",
+        "            self.header_ok",
+        "            True",
+    ),
+    (
+        VERIFY,
+        "点検で時刻の読めない行を数えない",
+        '        if diff.parse_time(row[transform.COLUMNS.index("取得時刻")]) is None:',
+        "        if False:",
+    ),
+    (
+        VERIFY,
+        "点検で価格が数値でない行を数えない（FORMATTED_VALUE を踏んでも鳴らない）",
+        "            if not isinstance(price, int) or isinstance(price, bool):",
+        "            if False:",
+    ),
+    (
+        VERIFY,
+        "失敗行の空の価格も異常として数える（毎回鳴って本物が埋もれる）",
+        "        elif status == transform.STATUS_OK:",
+        "        elif True:",
+    ),
+    (
+        VERIFY,
+        "報告に比べたセル数を出さない（数字の足りない「一致」になる）",
+        '        f"{result.compared_cells} セルを比べました"',
+        '        ""',
+    ),
+    (
+        TO_SHEET,
+        "照合が失敗しても終了コードに出さない",
+        "        if self.verification is not None and not self.verification.ok:",
+        "        if False:",
+    ),
+    (
+        TO_SHEET,
+        "照合に行数の帳尻を渡さない（上書きを見逃す）",
+        "                rows_before=len(history),",
+        "",
     ),
 ]
 

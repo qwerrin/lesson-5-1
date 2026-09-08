@@ -33,6 +33,10 @@
 失敗を結果から落とす            「書かなかった日」と区別が付かなくなる
 タイムアウトを渡さない          欠落ではなく**終わらない**。翌日の実行と重なる
 エラー本文を理由に流す          URL に鍵が載る。**シートとスクショの両方に残る**
+失敗行を前回として比べる        空の価格が数値に落ち、値下がりが毎日飛ぶ
+比較できないのを 0 とする       比べていないのに「変化なし」として履歴に残る
+いちばん下を最新とみなす        並べ替えた日から静かに間違える
+在庫の変化を見ない              価格は同じ。**買えないことだけが記録に残らない**
 ============================== ================================================
 """
 
@@ -49,6 +53,7 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 
 TRANSFORM = "task2/transform.py"
 FETCH = "task2/fetch_items.py"
+DIFF = "task2/diff.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", "docs", "*.png", "node_modules"
@@ -291,6 +296,101 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "本文が読めないときに例外を出す（1件の失敗が全件の欠落になる）",
         "    except ValueError:\n        return None",
         "    except ValueError:\n        raise",
+    ),
+
+    # ------------------------------------------------------------------ diff
+    #
+    # ここは**比べる層**。壊れると「値下がりが飛ばない」か「毎日飛ぶ」かのどちらかで、
+    # **前者は無音**。通知が来ないことは、変化が無かったことの証拠にならない。
+    (
+        DIFF,
+        "失敗行を前回に採る（空の価格を数値に落とす）",
+        "        if _cell(row, _STATUS) != transform.STATUS_OK:",
+        "        if False:",
+    ),
+    (
+        DIFF,
+        "同時刻の行を前回に採る（追記後に読み直すと自分自身と比べる）",
+        "        if before is not None and at >= before:",
+        "        if before is not None and at > before:",
+    ),
+    (
+        DIFF,
+        "いちばん下の行を最新とみなす（並べ替えた日から静かに間違える）",
+        "        if best_at is None or at > best_at:",
+        "        if True:",
+    ),
+    (
+        DIFF,
+        "読めない時刻の行を黙って飛ばす（0件になった理由が言えない）",
+        "            skipped += 1",
+        "            pass",
+    ),
+    (
+        DIFF,
+        "オフセット無しの時刻を受け入れる（物差しが2本になる）",
+        "    return parsed if parsed.tzinfo is not None else None",
+        "    return parsed",
+    ),
+    (
+        DIFF,
+        "比較できないときに差を 0 とする（比べていないのに「変化なし」）",
+        "            delta=None,",
+        "            delta=0,",
+    ),
+    (
+        DIFF,
+        "「初回」と「前回が失敗」を区別しない（取れていないことが隠れる）",
+        "        note = (\n            NOTE_PREVIOUS_FAILED\n            if _has_earlier_row(history, item_code, current_at)\n            else NOTE_FIRST\n        )",
+        "        note = NOTE_FIRST",
+    ),
+    (
+        DIFF,
+        "今回が失敗行でも比較する",
+        "    if _cell(current, _STATUS) != transform.STATUS_OK:",
+        "    if False:",
+    ),
+    (
+        DIFF,
+        "空の価格を 0 として扱う（0円は「値下がり」に見える）",
+        "    return value if isinstance(value, int) and not isinstance(value, bool) else None",
+        "    return value if isinstance(value, int) and not isinstance(value, bool) else 0",
+    ),
+    (
+        DIFF,
+        "列が足りない行で例外を出す（1行の崩れで全商品の判定が止まる）",
+        "    return row[index] if len(row) > index else \"\"",
+        "    return row[index]",
+    ),
+    (
+        DIFF,
+        "片方が空でも商品名が変わったと数える（古い行のせいで毎回鳴る）",
+        "        name_changed=bool(previous_name and current_name and previous_name != current_name),",
+        "        name_changed=bool(previous_name != current_name),",
+    ),
+    (
+        DIFF,
+        "在庫の変化を見ない（価格が同じなら「変化なし」で終わる）",
+        "        stock_changed=(\n            previous_stock != \"\" and current_stock != \"\" and previous_stock != current_stock\n        ),",
+        "        stock_changed=False,",
+    ),
+    (
+        DIFF,
+        "値上がりも通知に混ぜる",
+        "    return [c for c in comparisons if c.dropped and -(c.delta or 0) >= threshold]",
+        "    return [c for c in comparisons if c.comparable and abs(c.delta or 0) >= threshold]",
+    ),
+    (
+        DIFF,
+        "閾値を無視する（1円の変動で毎日鳴る）",
+        "    return [c for c in comparisons if c.dropped and -(c.delta or 0) >= threshold]",
+        "    return [c for c in comparisons if c.dropped]",
+    ),
+    (
+        DIFF,
+        "比較できなかった商品を結果から落とす（突き合わせができなくなる）",
+        "    return [compare_row(row, history) for row in current_rows]",
+        "    return [c for c in (compare_row(row, history) for row in current_rows) if c.comparable]",
     ),
 ]
 

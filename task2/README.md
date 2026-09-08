@@ -151,7 +151,7 @@ https://www.googleapis.com/auth/spreadsheets
 | 楽天 API の疎通確認 | ✅ 2026-09-06。未確認だった4件が全部決着 |
 | Google 側の手作業 | ✅ 2026-09-06。**書いて・読み返して・消すところまで実機で確認** |
 | 実装 `transform.py` | ✅ テスト **36 件**・わざと壊す検査 **14 か所すべて kill** |
-| 実装 `fetch_items.py` | ⬜ 楽天 API を叩く（間隔制御・429 の指数退避） |
+| 実装 `fetch_items.py` | ✅ テスト **55 件**・わざと壊す検査 **24 か所すべて kill**（2026-09-08） |
 | 実装 `diff.py` | ⬜ 履歴の末尾との比較（値下がり判定） |
 | 実装 `to_sheet.py` | ⬜ CLI の皮 |
 | 実装 `verify_sheet.py` | ⬜ 別経路でシートを読み直して照合 |
@@ -160,6 +160,9 @@ https://www.googleapis.com/auth/spreadsheets
 .venv\Scripts\python.exe -m pytest task2\tests -q
 .venv\Scripts\python.exe task2\tools\mutate.py
 ```
+
+課題2のテストは **91 件**、わざと壊す検査は **38 か所すべて kill・素通り 0・置換先なし 0**。
+リポジトリ全体では **460 件**が通る（課題1の分は1件も壊れていない）。
 
 > **「テストが通った」を結論にしない。** `mutate.py` が実装を1か所ずつ壊して、
 > テストが落ちることを確かめる。**14 か所のうち1つは最初 素通りした**

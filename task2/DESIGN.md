@@ -264,6 +264,60 @@ URL には `applicationId` が載る。本文をそのまま流すと、**鍵が
 | H | 同じ `itemCode` のまま**商品の中身が差し替わる** | ショップは商品名も内容量も変えられる。価格の推移が別物同士の比較になるが、**API は正常終了する** |
 | I | 取得時刻の**物差しが混ざる** | オフセット無しの時刻が1行混ざると、比較で例外が出るか、暗黙に別の物差しで比べる。5-E の裏側——書く側で1本にしても、**読む側が受け入れてしまえば崩れる** |
 | J | 価格は同じで**在庫だけ 1→0 になる** | 「値段が動いていない」は正しいが、**買えない**。価格だけ見ていると「変化なし」と記録される |
+| K | **見出し行が `COLUMNS` と一致している保証が無い** | 人はシートの列を並べ替えられるし、名前も変えられる。**追記は成功する**——列の意味だけが全部ズレる |
+| L | `valueInputOption` の選択で**中身が変わる** | `USER_ENTERED` は文字列を数値・日付・数式に変換する（公式原文↓）。**取得時刻が日付に化けると、読み戻しが全滅する** |
+| M | `insertDataOption` の既定 | `OVERWRITE` は「書き込む領域の既存データを上書きする」（公式原文↓） |
+| N | **書いた型と読み戻す型が違う** | `values.get` の既定は `FORMATTED_VALUE`。公式の例では数値 `1.23` が **`"$1.23"` という文字列**で返る。`diff` は int しか価格と認めないので、**全比較が「価格が無い」になり、通知が永久に鳴らない**。エラーは出ない |
+| O | watchlist の**重複** | 同じ `itemCode` が2つあれば2行入り、件数の突き合わせ（5-C）が狂う。API も2回叩く |
+| P | watchlist が空・壊れている | 何も書かずに**正常終了**する。「今日は動いた」と読める |
+| Q | **書いた列数と読み戻す列数が違う** | 末尾が空の列は返ってこない。15列で書いた行が**14列で戻る**。書き込みは成功しているので、**読み戻して初めて分かる** |
+
+### K〜P は書き込み層を書く前に出した（2026-09-08）／ Q は実機で出た
+
+**ここは公式ドキュメントを読まないと1つも出てこない。** 実物を触っても、
+`USER_ENTERED` で書いた日は普通に成功して、**壊れるのは読み戻す日**である。
+
+原文（2026-09-08 取得）:
+
+> **RAW** — The values the user has entered will not be parsed and will be stored as-is.
+> **USER_ENTERED** — The values will be parsed as if the user typed them into the UI.
+> Numbers will stay as numbers, but **strings may be converted to numbers, dates, etc.**
+>
+> — <https://developers.google.com/workspace/sheets/api/reference/rest/v4/ValueInputOption>
+
+> **OVERWRITE** — The new data overwrites existing data in the areas it is written.
+> **INSERT_ROWS** — Rows are inserted for the new data.
+>
+> — <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/append>
+
+> **FORMATTED_VALUE**（`values.get` の既定）— ... then `A2` would return `"$1.23"`.
+> **UNFORMATTED_VALUE** — ... then `A2` would return the number `1.23`.
+>
+> — <https://developers.google.com/workspace/sheets/api/reference/rest/v4/ValueRenderOption>
+
+| # | 塞ぎ方 |
+|---|---|
+| K | 書く前に1行目を読み、`COLUMNS` と**完全一致でなければ書かない**。空なら見出しを書く |
+| L | `valueInputOption=RAW`。**解釈させない** |
+| M | `insertDataOption=INSERT_ROWS` を明示する |
+| N | 読むときは `valueRenderOption=UNFORMATTED_VALUE`。**書く側と読む側で型が変わらないことを、テストで留める** |
+| Q | 読むときに幅を渡し、**末尾に落ちた空セルを補う**。ただし**長い行は切らない**——人が列を足したなら、それは `ensure_header` が弾くべき異常であって、読む側が隠してよいものではない |
+| O | watchlist を読む時点で重複を落とし、**落とした件数を報告する**（黙って落とさない） |
+| P | 空の watchlist は**エラーにする**。0件を正常終了にしない |
+
+**Q は K〜P を全部やってから、実機で出た。** 設計の段階では出せなかった——
+公式の記述（下記）は読めば分かるが、**どの列が末尾に来るかは実装を書いて初めて決まる**。
+この課題では `理由` が末尾で、取得できた行では空になる。
+
+> For output, empty trailing rows and columns will not be included.
+> — <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values>（2026-09-08）
+
+**実装より先に穴を出す**やり方でも、**書いてからでないと出ない穴がある**。
+だから出したあとも同じ問いを当て直す——「いま書いたこのコードは、何を見ていないか」。
+
+**L と N は対になっている。** 片方だけ直しても、もう片方で型が変わる。
+「書けたか」ではなく「**書いて読み戻したものが同じか**」で確かめる
+——`verify_sheet.py` を別に置く理由もこれ。
 
 ### G〜J は `diff.py` を書く前に出した（2026-09-08）
 
@@ -298,7 +352,7 @@ A〜F は `transform.py` の前に出したもので、G〜J は**比較する�
 
 | 判断 | 対象 |
 |---|---|
-| **塞ぐ** | 5-A / 5-B / 5-C / 5-E / 5-F / **5-G / 5-H / 5-I / 5-J** ／ 4-① は「**上限に当たったこと自体を記録する**」で塞ぐ ／ 4-⑥ は「**区別できないことを列として記録する**」（`理由=不明`）で塞ぐ ／ **4-③ のポイント・送料・税**（実測で取れると分かったため。列に足して「実質価格」で判定する） ／ **4-⑨（IP拒否）** は**生の status と error を理由に残す**（`不明(HTTP 403 <error>)`）。固定語にしない理由は 4-⑨ の訂正 ／ **4-⑩（認証の期限）は認証方式の選択で塞いだ**（サービスアカウント＝7日制限が無い） |
+| **塞ぐ** | 5-A / 5-B / 5-C / 5-E / 5-F / **5-G / 5-H / 5-I / 5-J / 5-K / 5-L / 5-M / 5-N / 5-O / 5-P / 5-Q** ／ 4-① は「**上限に当たったこと自体を記録する**」で塞ぐ ／ 4-⑥ は「**区別できないことを列として記録する**」（`理由=不明`）で塞ぐ ／ **4-③ のポイント・送料・税**（実測で取れると分かったため。列に足して「実質価格」で判定する） ／ **4-⑨（IP拒否）** は**生の status と error を理由に残す**（`不明(HTTP 403 <error>)`）。固定語にしない理由は 4-⑨ の訂正 ／ **4-⑩（認証の期限）は認証方式の選択で塞いだ**（サービスアカウント＝7日制限が無い） |
 | **承知で残す** | 4-②（別出品）／ **4-③ のクーポンだけ**（フィールドが存在しない）／ 4-④（在庫の粒度）／ 4-⑤（取得間隔の隙間）／ 4-⑧（QPS 超過時の挙動・**まず挙動を確かめる**）／ 5-D（**まず挙動を確かめる**） |
 | **解消した** | 4-⑦（バージョン差。`20220601` は存在しない） |
 

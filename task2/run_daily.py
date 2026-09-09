@@ -457,6 +457,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--env", default=".env", help="資格情報を読む .env の場所")
     parser.add_argument(
+        "--sheet-name",
+        default=None,
+        help=(
+            "書き込み先のタブ名。渡さなければ to_sheet.py の既定が効きます。既定値をここに書き写さないのは、2箇所に持つと片方が古くなるためです。"
+        ),
+    )
+    parser.add_argument(
         "--threshold", type=int, default=0,
         help="値下がりを知らせる下げ幅（円）。既定 0 は1円でも知らせる",
     )
@@ -490,6 +497,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         env = {}
 
     inner = ["--env", args.env, "--threshold", str(args.threshold)]
+    if args.sheet_name:
+        inner += ["--sheet-name", args.sheet_name]
     if not args.allow_same_day:
         inner.append("--once-a-day")
 

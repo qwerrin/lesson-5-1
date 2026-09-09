@@ -867,6 +867,18 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         '    if not args.allow_same_day:\n        inner.append("--once-a-day")',
         '    if args.allow_same_day:\n        inner.append("--once-a-day")',
     ),
+    (
+        RUN_DAILY,
+        "タブ名を to_sheet へ渡さない",
+        '        inner += ["--sheet-name", args.sheet_name]',
+        '        inner += []',
+    ),
+    (
+        RUN_DAILY,
+        "タブ名を渡していなくても渡す（既定値が2箇所になる）",
+        '    if args.sheet_name:',
+        '    if True:',
+    ),
 ]
 
 

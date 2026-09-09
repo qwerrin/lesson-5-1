@@ -662,3 +662,19 @@ class TestCLI:
         help_text = run_daily.build_parser().format_help()
         index = help_text.rindex("--allow-same-day")
         assert "取得できた行" in help_text[index:index + 300]
+
+    def test_タブ名を渡せる(self, tmp_path, monkeypatch):
+        # 本番の履歴を汚さずに値下がりを再現するのに要る（別タブで試す）。
+        seen: list[list[str]] = []
+        self._patch(monkeypatch, seen)
+        run_daily.main(["--log-dir", str(tmp_path), "--sheet-name", "検証"])
+        assert "--sheet-name" in seen[0]
+        assert "検証" in seen[0]
+
+    def test_既定ではタブ名を渡さない(self, tmp_path, monkeypatch):
+        # **既定値を2箇所に持たない。** 渡さなければ to_sheet.py の既定が効く。
+        # ここに書き写すと、向こうを変えた日にこちらが古い値で上書きする。
+        seen: list[list[str]] = []
+        self._patch(monkeypatch, seen)
+        run_daily.main(["--log-dir", str(tmp_path)])
+        assert "--sheet-name" not in seen[0]

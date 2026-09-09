@@ -94,6 +94,10 @@ class RunResult:
     #: 書いたあとに**別の資格情報で読み直した**結果。走らせなければ None。
     #: **走っていないことを、走ったふりで隠さない。**
     verification: verify_sheet.VerifyResult | None = None
+    #: この回の時刻。**残す側**（`run_daily`）が使う。
+    fetched_at: str = ""
+    #: 同じ日にもう書いてあったので、**取りに行かずに終えた**（DESIGN 5-X）。
+    skipped: bool = False
 
     @property
     def ok(self) -> bool:
@@ -179,6 +183,7 @@ def run(
     write: bool = True,
     duplicates: Sequence[str] = (),
     verify_service: Any | None = None,
+    skip_if_written_today: bool = False,
     **fetch_kwargs: Any,
 ) -> RunResult:
     """1回ぶんを通す。**外部への接続は引数で受け取る**ので、テストで再現できる。"""
@@ -194,6 +199,29 @@ def run(
     history = sheets_client.read_rows(
         service, spreadsheet_id, data_range, width=len(transform.COLUMNS)
     )
+
+    # 2.5 同じ日にもう書いてあれば、**取りに行く前に**終わる（DESIGN 5-X）。
+    #     止めるのは 5-K と同じ理由——結果が残らないと分かっている
+    #     リクエストは、QPS を捨てるだけになる。
+    if skip_if_written_today and diff.written_on(history, fetched_at):
+        return RunResult(
+            requested=len(item_codes),
+            fetched_ok=0,
+            fetched_failed=0,
+            reasons={},
+            rows_built=0,
+            sent=0,
+            written=0,
+            wrote=False,
+            drops=[],
+            incomparable={},
+            name_changed=[],
+            stock_changed=[],
+            duplicates=list(duplicates),
+            header_state=header_state,
+            fetched_at=fetched_at,
+            skipped=True,
+        )
 
     # 3. 取りに行く。
     report = fetch_items.fetch_all(
@@ -246,11 +274,21 @@ def run(
         duplicates=list(duplicates),
         header_state=header_state,
         verification=verification,
+        fetched_at=fetched_at,
     )
 
 
 def format_report(result: RunResult) -> list[str]:
     """画面に出す行。**資格情報は1文字も載せない**（記事のスクショに写る）。"""
+    if result.skipped:
+        # **「スキップしました」だけでは、いつのことか分からない。**
+        return [
+            f"スキップ       {result.fetched_at[:10]} には取得できた行がもう入っています",
+            "               同じ日に2行入れると、次の回の「前回」が"
+            "同じ日の行になります（DESIGN 5-X）",
+            "               楽天 API には1回も投げていません",
+        ]
+
     lines = [
         f"対象           {result.requested} 件"
         + (f"（重複 {len(result.duplicates)} 件を除外）" if result.duplicates else ""),
@@ -364,6 +402,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--once-a-day",
+        action="store_true",
+        help=(
+            "その日にすでに取得できた行が入っていれば、何もせずに終わります。"
+            "見ているのは実行の回数ではなく取得できた行の有無なので、"
+            "全部失敗した日は次の起動でもう一度取りに行きます。"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -447,6 +494,7 @@ def execute(argv: Sequence[str] | None = None) -> Outcome:
                 threshold=args.threshold,
                 write=not args.dry_run,
                 verify_service=verify_service,
+                skip_if_written_today=args.once_a_day,
             )
     except (ToSheetError, sheets_client.SheetError, env_file.EnvFileError) as error:
         return Outcome(exit_code=1, result=None, lines=[str(error)])

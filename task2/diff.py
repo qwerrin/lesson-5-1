@@ -158,6 +158,35 @@ def previous_row(
     return best, skipped
 
 
+def written_on(history: Sequence[Sequence[Any]], moment: str) -> bool:
+    """``moment`` と同じ日に、**取得できた行**がすでにあるか（DESIGN 5-X）。
+
+    **失敗行しか無い日は「まだ」と答える。** ネットワークが上がる前に走った回
+    （5-AB）を、次の起動で拾い直せるようにするため。
+
+    日は **``moment`` のオフセットに揃えて**見る。実行環境のタイムゾーンで
+    答えが変わると、書く側で1本にした物差しが読む側で2本に戻る（5-E）。
+    """
+    now = parse_time(moment)
+    if now is None:
+        # **読めない時刻を「今日ではない」と決めない**のではなく、
+        # ここでは「まだ書いていない」に倒す。止めるより走らせるほうが、
+        # 欠測（行がただ無い日）を作らない。
+        return False
+
+    for row in history:
+        if not isinstance(row, Sequence) or isinstance(row, str):
+            continue
+        if _cell(row, _STATUS) != transform.STATUS_OK:
+            continue
+        at = parse_time(_cell(row, _AT))
+        if at is None:
+            continue
+        if at.astimezone(now.tzinfo).date() == now.date():
+            return True
+    return False
+
+
 def _has_earlier_row(
     history: Sequence[Sequence[Any]], item_code: str, before: datetime | None
 ) -> bool:

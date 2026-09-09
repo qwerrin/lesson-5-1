@@ -706,3 +706,99 @@ class Test実行の切り出し:
         seen: list[str] = []
         assert to_sheet.main([], out=seen.append) == 1
         assert seen == ["こわれました"]
+
+
+# ============================================================ 5-X 同じ日に2回
+
+
+class Test同じ日に2回書かない:
+    """DESIGN 5-X。21時とログオン時の**両方**を引き金にすると必ず起きる。
+
+    2行入ること自体より、**次回の「前回値」が同日の行になる**ほうが重い。
+    値下がり幅が「今日の中の差」に化けるのに、**エラーは1つも出ない**。
+    """
+
+    def _http(self):
+        return FakeHttp({CODE_A: ok_response(CODE_A), CODE_B: ok_response(CODE_B)})
+
+    def test_今日の取得行があれば楽天に投げない(self):
+        # **書けないと分かっているなら投げない**（5-K と同じ形）。
+        # QPS を捨てても、成果は1行も残らない。
+        http = self._http()
+        result = run(http, values_with(history=[history_row(CODE_A, at=AT)]),
+                     skip_if_written_today=True)
+        assert result.skipped is True
+        assert http.calls == []
+
+    def test_スキップしたら1行も書かない(self):
+        values = values_with(history=[history_row(CODE_A, at=AT)])
+        run(self._http(), values, skip_if_written_today=True)
+        assert values.append_calls == []
+
+    def test_スキップは成功として返す(self):
+        result = run(self._http(), values_with(history=[history_row(CODE_A, at=AT)]),
+                     skip_if_written_today=True)
+        assert result.exit_code == 0
+
+    def test_スキップした日が報告に出る(self):
+        # **「スキップしました」だけでは、いつのことか分からない。**
+        result = run(self._http(), values_with(history=[history_row(CODE_A, at=AT)]),
+                     skip_if_written_today=True)
+        assert any("2026-09-08" in line for line in to_sheet.format_report(result))
+
+    def test_失敗行しかない日はもう一度走る(self):
+        # ネットワークが上がる前に走った日（5-AB）を、次のログオンで拾い直せる。
+        failed = transform.failure_row(CODE_A, AT, "接続できません")
+        result = run(self._http(), values_with(history=[failed]),
+                     skip_if_written_today=True)
+        assert result.skipped is False
+        assert result.sent == 1
+
+    def test_昨日の行ではスキップしない(self):
+        result = run(self._http(), values_with(history=[history_row(CODE_A, at=YESTERDAY)]),
+                     skip_if_written_today=True)
+        assert result.skipped is False
+
+    def test_別の商品でもその日に書いてあれば止まる(self):
+        # 日単位で見る。**部分的に書けた日の残りは翌日に回る**——
+        # その回に何もしないほうが、同じ日に2行入るより静か。
+        result = run(self._http(), values_with(history=[history_row(CODE_B, at=AT)]),
+                     codes=(CODE_A,), skip_if_written_today=True)
+        assert result.skipped is True
+
+    def test_既定ではスキップしない(self):
+        # 手で叩くときに「もう1回」ができないと困る。
+        result = run(self._http(), values_with(history=[history_row(CODE_A, at=AT)]))
+        assert result.skipped is False
+        assert result.sent == 1
+
+    def test_時刻が読めない行は根拠にしない(self):
+        # 5-I と同じ扱い。**読めないものを「今日」に数えない。**
+        row = history_row(CODE_A, at=AT)
+        row[transform.COLUMNS.index("取得時刻")] = "2026-09-08 21:00"  # オフセットが無い
+        result = run(self._http(), values_with(history=[row]), skip_if_written_today=True)
+        assert result.skipped is False
+
+    def test_オフセットが違っても同じ瞬間なら止まる(self):
+        # 物差しを2本にしない（5-E）。**今回の時刻のオフセットに揃えて**日を見るので、
+        # 実行環境のタイムゾーンで結果が変わらない。
+        row = history_row(CODE_A, at="2026-09-08T12:00:00+00:00")  # = 21:00 (+09:00)
+        result = run(self._http(), values_with(history=[row]), skip_if_written_today=True)
+        assert result.skipped is True
+
+    def test_スキップしなかった回はskippedがFalse(self):
+        result = run(self._http(), values_with(), skip_if_written_today=True)
+        assert result.skipped is False
+        assert result.sent == 1
+
+    def test_CLIから指定できる(self):
+        assert to_sheet.build_parser().parse_args(["--once-a-day"]).once_a_day is True
+
+    def test_CLIの既定は切ってある(self):
+        assert to_sheet.build_parser().parse_args([]).once_a_day is False
+
+    def test_CLIの説明が何を見るか言う(self):
+        # **「1日1回」ではない。** 見ているのは「その日に取得できた行があるか」。
+        help_text = to_sheet.build_parser().format_help()
+        index = help_text.rindex("--once-a-day")
+        assert "取得できた行" in help_text[index:index + 300]

@@ -592,3 +592,117 @@ class TestCLI:
 
     def test_既定では書く(self):
         assert to_sheet.build_parser().parse_args([]).dry_run is False
+
+
+# ============================================================ 実行の切り出し
+
+
+class Test実行の切り出し:
+    """`main` は `execute` の**薄い皮**。画面へ出す責任だけを持つ。
+
+    定期実行のラッパ（`run_daily.py`）は報告の**文字列を読まない**。
+    読めば「値下がり 0 件」と「値下がり 10 件」を部分一致で見分けることになり、
+    README に自分で書いた「部分一致は弱い」を、照合器に続いてもう一度踏む。
+    だから `execute` は `RunResult` を**そのまま**返す。
+    """
+
+    #: 鍵の場所は**実在しないパス**にする。パッチ済みなので中身は要らないが、
+    #: 実在パスを書くと 403 の案内が**本物の client_email を読んで**しまう。
+    ENV = {
+        "RAKUTEN_APPLICATION_ID": "app-id",
+        "RAKUTEN_ACCESS_KEY": "access-key",
+        "GOOGLE_SHEET_ID": SHEET_ID,
+        "GOOGLE_SERVICE_ACCOUNT_FILE": "no-such-key.json",
+    }
+
+    @classmethod
+    def _patch(cls, monkeypatch, *, result=None, error=None, calls=None):
+        monkeypatch.setattr(to_sheet.env_file, "load", lambda path: dict(cls.ENV))
+        monkeypatch.setattr(
+            to_sheet.sheets_client, "load_credentials", lambda *a, **k: object()
+        )
+        monkeypatch.setattr(
+            to_sheet.sheets_client, "build_service", lambda credentials: object()
+        )
+        monkeypatch.setattr(
+            to_sheet.verify_sheet, "read_only_service", lambda path: object()
+        )
+
+        def fake_run(**kwargs):
+            if calls is not None:
+                calls.append(kwargs)
+            if error is not None:
+                raise error
+            return result
+
+        monkeypatch.setattr(to_sheet, "run", fake_run)
+
+    @staticmethod
+    def _result(**over):
+        base = dict(
+            requested=2, fetched_ok=2, fetched_failed=0, reasons={},
+            rows_built=2, sent=2, written=2, wrote=True, drops=[],
+            incomparable={}, name_changed=[], stock_changed=[],
+            duplicates=[], header_state="そろっています",
+        )
+        base.update(over)
+        return to_sheet.RunResult(**base)
+
+    def test_画面に何も出さない(self, monkeypatch, capsys):
+        # **どこへ出すかは呼ぶ側が決める。** ここで print すると、
+        # ラッパが捕まえられない場所へ報告が漏れる（DESIGN 5-V）。
+        self._patch(monkeypatch, result=self._result())
+        to_sheet.execute([])
+        assert capsys.readouterr().out == ""
+
+    def test_結果をそのまま返す(self, monkeypatch):
+        result = self._result()
+        self._patch(monkeypatch, result=result)
+        assert to_sheet.execute([]).result is result
+
+    def test_報告はformat_reportと同じ(self, monkeypatch):
+        result = self._result()
+        self._patch(monkeypatch, result=result)
+        assert to_sheet.execute([]).lines == to_sheet.format_report(result)
+
+    def test_終了コードは結果のもの(self, monkeypatch):
+        self._patch(monkeypatch, result=self._result(fetched_failed=1, reasons={"不明": 1}))
+        assert to_sheet.execute([]).exit_code == 2
+
+    def test_mainは報告を全部流す(self, monkeypatch):
+        result = self._result()
+        self._patch(monkeypatch, result=result)
+        seen: list[str] = []
+        to_sheet.main([], out=seen.append)
+        assert seen == to_sheet.format_report(result)
+
+    def test_mainは終了コードを返す(self, monkeypatch):
+        self._patch(monkeypatch, result=self._result(sent=2, written=1))
+        assert to_sheet.main([], out=lambda line: None) == 1
+
+    def test_失敗したら結果はNone(self, monkeypatch):
+        # **「走らなかった」を「結果0件」で表さない。**
+        self._patch(monkeypatch, error=to_sheet.ToSheetError("こわれました"))
+        outcome = to_sheet.execute([])
+        assert outcome.result is None
+        assert outcome.exit_code == 1
+        assert outcome.lines == ["こわれました"]
+
+    def test_権限の案内も報告に入る(self, monkeypatch):
+        self._patch(monkeypatch, error=Test権限の案内.FakeHttpError(403))
+        outcome = to_sheet.execute([])
+        assert outcome.result is None
+        assert outcome.exit_code == 1
+        assert any("共有" in line for line in outcome.lines)
+
+    def test_案内が作れない例外はそのまま投げる(self, monkeypatch):
+        # **握って握りつぶさない。** 案内を足せない失敗は、隠すと原因が消える。
+        self._patch(monkeypatch, error=RuntimeError("なにか"))
+        with pytest.raises(RuntimeError):
+            to_sheet.execute([])
+
+    def test_mainも同じ失敗の出し方をする(self, monkeypatch):
+        self._patch(monkeypatch, error=to_sheet.ToSheetError("こわれました"))
+        seen: list[str] = []
+        assert to_sheet.main([], out=seen.append) == 1
+        assert seen == ["こわれました"]

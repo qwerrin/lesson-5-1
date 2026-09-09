@@ -375,7 +375,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None, *, out: Callable[[str], None] = print) -> int:
+@dataclass(frozen=True)
+class Outcome:
+    """1回ぶんの実行が残したもの。**画面には1文字も出さない。**
+
+    定期実行のラッパ（`run_daily.py`）は `lines` を読まずに `result` を見る。
+    報告の文字列から件数を取り出すと、「値下がり 0 件」と「値下がり 10 件」を
+    部分一致で見分けることになる——**照合器で1度踏んだ形**（README 参照）。
+    """
+
+    exit_code: int
+    #: 走りきったときだけ入る。**失敗を「結果0件」で表さない**（DESIGN 5-B と同じ考え）。
+    result: RunResult | None
+    lines: list[str]
+
+
+def execute(argv: Sequence[str] | None = None) -> Outcome:
+    """1回ぶんを通して、**結果と報告を返す**。標準出力へは書かない。
+
+    タスクスケジューラは stdout を捨てる（DESIGN 5-V）。ここで print してしまうと、
+    定期実行では報告が**毎回作られて毎回消える**。出す先は呼ぶ側が決める。
+    """
     args = build_parser().parse_args(argv)
     # **先に空で束縛しておく。** 下の except は env を読むので、
     # .env の読み込み自体が想定外の失敗をすると NameError で握りつぶされる。
@@ -429,20 +449,27 @@ def main(argv: Sequence[str] | None = None, *, out: Callable[[str], None] = prin
                 verify_service=verify_service,
             )
     except (ToSheetError, sheets_client.SheetError, env_file.EnvFileError) as error:
-        out(str(error))
-        return 1
+        return Outcome(exit_code=1, result=None, lines=[str(error)])
     except Exception as error:  # noqa: BLE001
         # **握って握りつぶすのではなく、握って案内を足してから投げ直す。**
         # 403 は「認証は通っているのに書けない」形で、本文だけでは直せない。
         hint = permission_hint(env.get("GOOGLE_SERVICE_ACCOUNT_FILE", ""), error)
         if not hint:
             raise
-        out(hint)
-        return 1
+        return Outcome(exit_code=1, result=None, lines=[hint])
 
-    for line in format_report(result):
+    return Outcome(
+        exit_code=result.exit_code, result=result, lines=format_report(result)
+    )
+
+
+def main(argv: Sequence[str] | None = None, *, out: Callable[[str], None] = print) -> int:
+    """画面に出すだけの皮。**判断は `execute` が持つ。**"""
+    outcome = execute(argv)
+    for line in outcome.lines:
         out(line)
-    return result.exit_code
+    return outcome.exit_code
+
 
 
 if __name__ == "__main__":

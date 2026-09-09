@@ -43,3 +43,4 @@ service-account.json
 # まだ読んでいない範囲を飛ばす——この課題の目的（見逃しを防ぐ）に真っ向から反する。
 # コミットのたびに差分が出るノイズにもなる。
 task1/state.json
+task2/logs/

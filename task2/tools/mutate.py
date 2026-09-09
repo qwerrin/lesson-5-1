@@ -59,6 +59,9 @@ TO_SHEET = "task2/to_sheet.py"
 #: 「素通り0」が「守られている」ではなく「そこを見ていない」を意味していた。
 VERIFY = "task2/verify_sheet.py"
 SHEETS = "common/sheets_client.py"
+#: **定期実行の皮も壊す。** ここが守られていないと、失敗しても誰も気づかない
+#: ——本体が正しく動くことより、通知が死んでいることのほうが静かに効く。
+RUN_DAILY = "task2/run_daily.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", "docs", "*.png", "node_modules"
@@ -312,8 +315,10 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         DIFF,
         "失敗行を前回に採る（空の価格を数値に落とす）",
-        "        if _cell(row, _STATUS) != transform.STATUS_OK:",
-        "        if False:",
+        "        if _cell(row, _STATUS) != transform.STATUS_OK:\n"
+        "            # 失敗行を前回にすると",
+        "        if False:\n"
+        "            # 失敗行を前回にすると",
     ),
     (
         DIFF,
@@ -478,8 +483,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         TO_SHEET,
         "落とした重複を黙って捨てる（入れたのに行が無い、と混同される）",
-        "        duplicates=list(duplicates),",
-        "        duplicates=[],",
+        "\n        duplicates=list(duplicates),",
+        "\n        duplicates=[],",
     ),
     (
         TO_SHEET,
@@ -640,6 +645,227 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "照合に行数の帳尻を渡さない（上書きを見逃す）",
         "                rows_before=len(history),",
         "",
+    ),
+    # ---------------------------------------------------------------- 5-X
+    (
+        DIFF,
+        "今日の失敗行も「書いた」と数える（取れなかった日を拾い直せない）",
+        '        if _cell(row, _STATUS) != transform.STATUS_OK:\n'
+        '            continue\n'
+        '        at = parse_time(_cell(row, _AT))\n'
+        '        if at is None:\n'
+        '            continue\n'
+        '        if at.astimezone(now.tzinfo).date() == now.date():',
+        '        at = parse_time(_cell(row, _AT))\n'
+        '        if at is None:\n'
+        '            continue\n'
+        '        if at.astimezone(now.tzinfo).date() == now.date():',
+    ),
+    (
+        DIFF,
+        "オフセットを揃えずに日を比べる（物差しが2本に戻る）",
+        "        if at.astimezone(now.tzinfo).date() == now.date():",
+        "        if at.date() == now.date():",
+    ),
+    (
+        DIFF,
+        "読めない時刻を「今」と見なす（根拠にならない行で止まる）",
+        "        at = parse_time(_cell(row, _AT))\n"
+        "        if at is None:\n"
+        "            continue\n"
+        "        if at.astimezone(now.tzinfo).date() == now.date():",
+        "        at = parse_time(_cell(row, _AT))\n"
+        "        if at is None:\n"
+        "            at = now\n"
+        "        if at.astimezone(now.tzinfo).date() == now.date():",
+    ),
+    (
+        TO_SHEET,
+        "同じ日でも取りに行く（履歴が2行入り、次の前回値が同じ日になる）",
+        "    if skip_if_written_today and diff.written_on(history, fetched_at):",
+        "    if False and diff.written_on(history, fetched_at):",
+    ),
+    (
+        TO_SHEET,
+        "スキップしたことを結果に出さない",
+        "            skipped=True,",
+        "            skipped=False,",
+    ),
+    (
+        TO_SHEET,
+        "スキップの報告に日付を出さない（いつのことか分からない）",
+        '            f"スキップ       {result.fetched_at[:10]} には取得できた行がもう入っています",',
+        '            "スキップ       取得できた行がもう入っています",',
+    ),
+    # ---------------------------------------------------------------- 5-V 残す
+    (
+        RUN_DAILY,
+        "記録を上書きする（前に何回動いたかが毎回消える）",
+        '    with path.open("a", encoding="utf-8") as handle:',
+        '    with path.open("w", encoding="utf-8") as handle:',
+    ),
+    (
+        RUN_DAILY,
+        "壊れた行が1つあれば全部捨てる（判断の材料まで消える）",
+        "        except ValueError:\n            continue",
+        "        except ValueError:\n            return []",
+    ),
+    (
+        RUN_DAILY,
+        "辞書でない行も記録として読む",
+        "        if isinstance(record, dict):\n            out.append(record)",
+        "        out.append(record)",
+    ),
+    (
+        RUN_DAILY,
+        "記録の時刻をオフセット無しでも読む（物差しが2本になる）",
+        "    return parsed if parsed.tzinfo is not None else None",
+        "    return parsed",
+    ),
+    # ---------------------------------------------------------------- 5-AC ロック
+    (
+        RUN_DAILY,
+        "置き去りのロックを永久に信じる（二度と走らない）",
+        "    return now - written > timedelta(minutes=minutes)",
+        "    return False",
+    ),
+    (
+        RUN_DAILY,
+        "生きているロックまで奪う（同時に2つ走る）",
+        "    return now - written > timedelta(minutes=minutes)",
+        "    return True",
+    ),
+    (
+        RUN_DAILY,
+        "読めないロックを「生きている」と読む",
+        "    if written is None:\n        return True",
+        "    if written is None:\n        return False",
+    ),
+    (
+        RUN_DAILY,
+        "取れなかった側もロックを消す（走っている側の鍵を外す）",
+        "        if acquired:\n            path.unlink(missing_ok=True)",
+        "        path.unlink(missing_ok=True)",
+    ),
+    # ---------------------------------------------------------------- 5-AA 通知
+    (
+        RUN_DAILY,
+        "成功した回にも失敗の通知を出す",
+        "    code = record.get(\"exit_code\") or 0\n    if code == 0:\n        return None",
+        "    code = record.get(\"exit_code\") or 0\n    if False:\n        return None",
+    ),
+    (
+        RUN_DAILY,
+        "失敗の通知に報告を入れない（何をすればいいか分からない）",
+        '        *[str(line) for line in record.get("report", [])],\n',
+        "",
+    ),
+    (
+        RUN_DAILY,
+        "失敗の通知に日付を入れない",
+        "        _when(record),\n",
+        "",
+    ),
+    (
+        RUN_DAILY,
+        "値下がりの件数を言わない",
+        '    lines = [f"↓ 値下がり {len(result.drops)} 件（{now.date().isoformat()}）"]',
+        '    lines = ["↓ 値下がり"]',
+    ),
+    (
+        RUN_DAILY,
+        "値下がりの下げ幅を出さない",
+        '            f"（{comparison.delta:+} 円・実質）"',
+        '            ""',
+    ),
+    # ---------------------------------------------------------------- 5-Y 生存通知
+    (
+        RUN_DAILY,
+        "生存通知に書いた行数を出さない（走ったことと入ったことを混ぜる）",
+        '        f"この {days} 日で {len(counted)} 回動いて、{written} 行書きました",',
+        '        f"この {days} 日で {len(counted)} 回動きました",',
+    ),
+    (
+        RUN_DAILY,
+        "生存通知そのものを実行の回数に数える",
+        "_COUNTED = (EVENT_RUN, EVENT_SKIP, EVENT_ERROR, EVENT_CRASH)",
+        "_COUNTED = (EVENT_RUN, EVENT_SKIP, EVENT_ERROR, EVENT_CRASH, EVENT_HEARTBEAT)",
+    ),
+    (
+        RUN_DAILY,
+        "期間の外の記録まで数える（去年の成果で今週を語る）",
+        "        if at is None or not (since <= at <= now):",
+        "        if at is None:",
+    ),
+    (
+        RUN_DAILY,
+        "生存通知の間隔の判定を裏返す（毎回鳴るか、二度と鳴らない）",
+        "    if last is not None and now - last < timedelta(days=days):",
+        "    if last is not None and now - last > timedelta(days=days):",
+    ),
+    (
+        RUN_DAILY,
+        "うまくいかなかった回を数えない",
+        '        f"うまくいかなかった回 {failed} 回",',
+        '        "",',
+    ),
+    # ---------------------------------------------------------------- 送る
+    (
+        RUN_DAILY,
+        "送るものが無くても認証する（失敗する場所を増やす）",
+        "    if not notices:\n"
+        "        # **送るものが無いのに認証しない。** 失敗する場所を増やさない。\n"
+        "        return []",
+        "    if False:\n        return []",
+    ),
+    (
+        RUN_DAILY,
+        "失敗の説明から秘密を伏せない（記録にトークンが載る）",
+        '            errors.append(f"{notice.kind}: {line_auth.redact(str(error), *secrets)}")',
+        '            errors.append(f"{notice.kind}: {error}")',
+    ),
+    (
+        RUN_DAILY,
+        "1本の送信が失敗したら残りを送らない",
+        "        except Exception as error:  # noqa: BLE001\n"
+        "            # **1本の失敗で残りを落とさない。** 死んだのは経路ではなく1通かもしれない。\n"
+        '            errors.append(f"{notice.kind}: {line_auth.redact(str(error), *secrets)}")\n'
+        "    return errors",
+        "        except Exception as error:  # noqa: BLE001\n"
+        '            errors.append(f"{notice.kind}: {line_auth.redact(str(error), *secrets)}")\n'
+        "            return errors\n"
+        "    return errors",
+    ),
+    # ---------------------------------------------------------------- 配線
+    (
+        RUN_DAILY,
+        "送れなかった生存通知も「送った」と記録する（次の7日も黙る）",
+        "        if heartbeat_errors:",
+        "        if False:",
+    ),
+    (
+        RUN_DAILY,
+        "通知を送れなくても終了コードに出さない",
+        "    if errors:\n        append_record(",
+        "    if False:\n        append_record(",
+    ),
+    (
+        RUN_DAILY,
+        "想定外の失敗を普通の実行として記録する",
+        '            "event": EVENT_CRASH,',
+        '            "event": EVENT_RUN,',
+    ),
+    (
+        RUN_DAILY,
+        "ロックが取れなくても走る（同じ日に2行入る）",
+        "        if not acquired:",
+        "        if False:",
+    ),
+    (
+        RUN_DAILY,
+        "同じ日に2回書かない指定を裏返す",
+        '    if not args.allow_same_day:\n        inner.append("--once-a-day")',
+        '    if args.allow_same_day:\n        inner.append("--once-a-day")',
     ),
 ]
 

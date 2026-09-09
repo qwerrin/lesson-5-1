@@ -780,9 +780,10 @@ class Test同じ日に2回書かない:
         assert result.skipped is False
 
     def test_オフセットが違っても同じ瞬間なら止まる(self):
-        # 物差しを2本にしない（5-E）。**今回の時刻のオフセットに揃えて**日を見るので、
-        # 実行環境のタイムゾーンで結果が変わらない。
-        row = history_row(CODE_A, at="2026-09-08T12:00:00+00:00")  # = 21:00 (+09:00)
+        # 物差しを2本にしない（5-E）。**今回の時刻のオフセットに揃えて**日を見る。
+        # **日をまたぐ瞬間を選ぶ。** 同じ日の中で比べると、揃えても揃えなくても
+        # 同じ答えになり、この検査は何も守らない。
+        row = history_row(CODE_A, at="2026-09-07T16:00:00+00:00")  # = 09-08 01:00 (+09:00)
         result = run(self._http(), values_with(history=[row]), skip_if_written_today=True)
         assert result.skipped is True
 

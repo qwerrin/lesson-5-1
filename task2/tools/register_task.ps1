@@ -48,6 +48,28 @@ $Script = Join-Path $Root "task2\run_daily.py"
 
 # ---------------------------------------------------------------- 照合の道具
 
+function Hide-Home {
+    <#
+        表示のためだけにホームディレクトリを伏せる。
+
+        この出力は**記事のスクリーンショットに写る**。ユーザー名は秘密ではないが、
+        **残す必要が無いものは残さない**（課題1でワークスペース名を伏せたのと同じ）。
+
+        **照合には実パスを使う。** 伏せた値で突き合わせると、
+        「表示は同じだが実体が違う」を見逃す——伏せることと、
+        検査を緩めることは別である。
+    #>
+    param([string]$Text)
+
+    # **先頭一致で判定しない。** 引数は "C:\Users\...\run_daily.py" のように
+    # クォートで始まるので、StartsWith では素通りする——2026-09-09 に実際に素通りし、
+    # 「引数」の行だけユーザー名が残ったままスクリーンショットに写った。
+    # 文字列の**どこにあっても**置き換える。
+    $homeDir = [Environment]::GetFolderPath('UserProfile')
+    if (-not $homeDir) { return $Text }
+    return [regex]::Replace($Text, [regex]::Escape($homeDir), '%USERPROFILE%', 'IgnoreCase')
+}
+
 function Test-Setting {
     <#
         設定を1つ照合する。**名前が無いこと自体を食い違いとして返す。**
@@ -91,7 +113,7 @@ if (-not $VerifyOnly) {
     # そのとき標準出力は捨てられているので理由が見えない（DESIGN 5-V / 5-Z）。
     foreach ($path in @($Python, $Script)) {
         if (-not (Test-Path -LiteralPath $path)) {
-            Write-Host "見つかりません: $path" -ForegroundColor Red
+            Write-Host "見つかりません: $(Hide-Home $path)" -ForegroundColor Red
             exit 1
         }
     }
@@ -195,9 +217,9 @@ foreach ($expectation in @(
 
 Write-Host ""
 Write-Host "$(if ($VerifyOnly) { '照合しました' } else { '登録しました' }): $($task.URI)"
-Write-Host "  実行          $($task.Actions[0].Execute)"
-Write-Host "  引数          $($task.Actions[0].Arguments)"
-Write-Host "  作業場所      $($task.Actions[0].WorkingDirectory)"
+Write-Host "  実行          $(Hide-Home $task.Actions[0].Execute)"
+Write-Host "  引数          $(Hide-Home $task.Actions[0].Arguments)"
+Write-Host "  作業場所      $(Hide-Home $task.Actions[0].WorkingDirectory)"
 Write-Host "  引き金        毎日 $At ／ ログオンの 5 分後"
 Write-Host "  電源          バッテリー駆動でも開始する・切り替わっても止めない"
 Write-Host "  状態          $($task.State)"

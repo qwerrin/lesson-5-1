@@ -19,7 +19,8 @@
 9. 定期実行の設定（タスク名・時刻・記録の場所・生存通知の間隔）が実装と一致する
 10. `.gitignore` が実行の記録を除外している
 11. DESIGN が出した穴が「塞ぐ」欄に載っている
-12. **README が名乗る照合項目数が、実際の項目数と一致する**
+12. **公開されうるファイルにホームのパス（ユーザー名）が写り込んでいない**
+13. **README が名乗る照合項目数が、実際の項目数と一致する**
 
 **検査対象を環境変数から取らない。** ``os.environ`` 経由の値はシェルで変わり、
 **空なら黙って 0 件を「問題なし」として表示する**。本物の資格情報は ``.env`` から
@@ -448,6 +449,31 @@ def main() -> int:
         bool(blocked) and not unblocked and len(holes) == 8,
         f"定期実行の穴 {len(holes)} 件が「塞ぐ」欄にある"
         + (f"：{unblocked} が無い" if unblocked else ""),
+    )
+
+    # ---------------------------------------------------------- ホームのパス
+    # **スクリーンショットにも、リポジトリにも、ユーザー名を残さない。**
+    # 秘密ではないが、残す必要が無いものは残さない（課題1でワークスペース名を伏せた形）。
+    home = Path.home()
+    if not home.name:
+        print("検査を始められません: ホームの名前を取れませんでした。", file=sys.stderr)
+        return 2
+    home_forms = (str(home), home.as_posix())
+    exposed = []
+    for path in files:
+        if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if any(form in text for form in home_forms):
+            exposed.append(str(path.relative_to(ROOT)))
+    check(
+        results,
+        not exposed,
+        f"公開されうるファイルにホームのパスが無い（{home_forms[0]}）"
+        + ("：" + " / ".join(exposed) if exposed else ""),
     )
 
     # ---------------------------------------------------------- 12. 自己申告

@@ -359,7 +359,7 @@ type task2\logs\run.jsonl
 課題2のテストは **337 件**（`common/sheets_client` の 47 件を含む合計は 384 件）、
 わざと壊す検査は **126 か所すべて kill・素通り 0・置換先なし 0**。
 リポジトリ全体では **753 件**が通る（課題1の分は1件も壊れていない）。
-文章とコードの機械照合 **22** 項目・NG 0。
+文章とコードの機械照合 **23** 項目・NG 0。
 
 ```powershell
 .venv\Scripts\python.exe task2\tools\check_docs.py

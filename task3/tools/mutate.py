@@ -56,13 +56,19 @@ ROOT = Path(__file__).resolve().parents[2]
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 
 BUILD = "task3/tools/build_audio.py"
+TRANSCRIBE = "task3/transcribe.py"
+#: **common も壊す。** 音声の口（generate_with_audio）をここに足したので、
+#: 対象から外すと「新しく書いた分だけ検査されない」状態になる。
+GEMINI = "common/gemini_client.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
     "docs", "*.png", "*.wav", "_parts", "node_modules",
 )
 
-TEST_PATHS = ("task3/tests",)
+#: **範囲を広げ忘れると、壊したのにテストが1件も走らず「素通り」に見える。**
+#: 判定が正しくても対象が空なら同じ緑になる（課題2 で踏んだ形）。
+TEST_PATHS = ("task3/tests", "common/tests/test_gemini_client.py")
 
 # (対象ファイル, 壊した内容, 置換前, 置換後)
 MUTATIONS: list[tuple[str, str, str, str]] = [
@@ -215,6 +221,173 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "被りの長さを秒ではなくサンプル数で返す",
         '                "seconds": span / rate,',
         '                "seconds": span,',
+    ),
+    # ================================================================ 文字起こし
+    #
+    # ここから先が狙うのは「**API が成功を返したのに中身が欠けている**」失敗。
+    # 例外は1つも出ない。だから壊しても、壊れたことが出力に現れない。
+    (
+        TRANSCRIBE,
+        "読めなかった行を静かに捨てる（落とすほど結果がきれいに見える）",
+        "            skipped.append(line)",
+        "            pass",
+    ),
+    (
+        TRANSCRIBE,
+        "発言0件でも通す（空の議事録が「何も無かった会議」として通る）",
+        "    if not utterances:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "空行も読めなかった行に数える（毎回ノイズが出て本物の欠落が埋もれる）",
+        "        if not line:",
+        "        if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "話者を最後のコロンまで取る（本文の前半が話者名に化ける）",
+        r"(.+?)\s*[:：]",
+        r"(.+)\s*[:：]",
+    ),
+    (
+        TRANSCRIBE,
+        "時刻の「時」を足さない（1時間超の会議で全部が巻き戻る）",
+        "+ (int(hours) * 3600 if hours else 0)",
+        "+ 0",
+    ),
+    (
+        TRANSCRIBE,
+        "音声の長さをフレーム数ではなくバイト数から出す",
+        "        seconds=frames / rate,",
+        "        seconds=path.stat().st_size / rate,",
+    ),
+    (
+        TRANSCRIBE,
+        "プロンプトから時刻の指定を落とす（5-D と 5-G が見えなくなる）",
+        '        "[MM:SS] 話者A: 発言の内容\\n"',
+        '        "話者A: 発言の内容\\n"',
+    ),
+    (
+        TRANSCRIBE,
+        "上限を超えても送る（拒否が課金や再試行と混ざる）",
+        "    if audio.n_bytes > limit_bytes:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "打ち切りを見ない（本文は返るので短い会議と見分けが付かない）",
+        "    elif reply.finish_reason not in OK_FINISH_REASONS:",
+        "    elif False:",
+    ),
+    (
+        TRANSCRIBE,
+        "打ち切りが読めなくても黙る（STOP だったと見分けが付かない）",
+        "    if reply.finish_reason is None:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "読めなかった行を報告しない",
+        "    if skipped:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "音声の長さを超える時刻を見ない（原文に無いものが議事録の根拠になる）",
+        "    if over:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "時刻の巻き戻りを見ない",
+        "    if backwards:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "末尾が音声の終わりに届いているかを見ない",
+        "    if last < audio.seconds - TAIL_TOLERANCE_SEC:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "末尾の許容を実質無限にする（検査は残っているのに一度も鳴らない）",
+        "TAIL_TOLERANCE_SEC = 30.0",
+        "TAIL_TOLERANCE_SEC = 100000.0",
+    ),
+    (
+        TRANSCRIBE,
+        "中身の薄さを見ない（無音のファイルでも文字起こしは成功する）",
+        "    if density < MIN_CHARS_PER_SEC:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "出力の言語を見ない（日本語の会議が英訳で返っても成功する）",
+        "    if ratio < MIN_JAPANESE_RATIO:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "日本語の割合を常に 1 にする（検査は残るが必ず通る）",
+        "    return sum(1 for c in letters if _JAPANESE.match(c)) / len(letters)",
+        "    return 1.0",
+    ),
+    (
+        TRANSCRIBE,
+        "話者の数を見ない（区別に失敗しても、片方が落ちても通る）",
+        "    if len(valid) < MIN_SPEAKERS:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "書式を外れた話者名を見ない（2026-09-12 に実機で踏んだ形）",
+        "    if odd:",
+        "    if False:",
+    ),
+    (
+        TRANSCRIBE,
+        "書式を外れた話者名も人数に数える（水増しで下限を満たす）",
+        "    valid = speakers - set(odd)",
+        "    valid = speakers",
+    ),
+    # ============================================================ 音声の口
+    (
+        GEMINI,
+        "音声を載せずに送る（プロンプトだけで「文字起こし」が返る）",
+        "            model=model, contents=[prompt, part], config=build_config()",
+        "            model=model, contents=[prompt], config=build_config()",
+    ),
+    (
+        GEMINI,
+        "空の音声でも呼ぶ（材料の無いところから作った文章が返る）",
+        "    if not audio_bytes:",
+        "    if False:",
+    ),
+    (
+        GEMINI,
+        "20MB を超えても送る",
+        "    if len(audio_bytes) > limit_bytes:",
+        "    if False:",
+    ),
+    (
+        GEMINI,
+        "空の答えを「できた」にする",
+        "    if not text:",
+        "    if False:",
+    ),
+    (
+        GEMINI,
+        "打ち切りの理由を常に STOP と報告する",
+        '    return getattr(reason, "name", None) or str(reason)',
+        '    return "STOP"',
+    ),
+    (
+        GEMINI,
+        "使用量を読まない（課金された側の値が残らない）",
+        "    return int(value) if isinstance(value, int) else None",
+        "    return None",
     ),
 ]
 

@@ -49,6 +49,7 @@ YouTube のキーは無料枠の読み取りだったのに対し、こちらは
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 import httpx
@@ -68,6 +69,31 @@ REDACTED = "***"
 
 #: 投げ直してよい HTTP ステータス。**本文ではなくこれで判定する**（上の事情2）。
 TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
+
+#: 1リクエストに直接載せられる大きさの上限（課題3・音声）。
+#: 公式の Audio understanding に「総リクエスト 20MB 以下」とある。
+#: 超えるぶんは Files API に回すが、**この課題では実装しない**——
+#: 使わない経路を書くと、動かしたことのないコードが残る。
+INLINE_LIMIT_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class Reply:
+    """生成の答え。**本文だけでは足りない。**
+
+    ``finish_reason`` を持ち回るのは、**打ち切られても本文は返る**ためである。
+    テキストだけ見ていると、途中で切れた文字起こしが「短い会議」として通る
+    ——`task3/DESIGN.md` の 5-G。
+
+    トークン数も持つ。課題3 では ``count_tokens`` と ``usage_metadata`` が
+    101 ズレる件が未決（DESIGN 3.5-#6）なので、**実際に課金された側**を
+    呼び出しごとに残せるようにしておく。
+    """
+
+    text: str
+    finish_reason: str | None
+    prompt_tokens: int | None
+    output_tokens: int | None
 
 
 class GeminiError(Exception):
@@ -218,16 +244,100 @@ def generate(
     except Exception as error:  # noqa: BLE001 - 訳して投げ直す
         raise translate_error(error, api_key) from error
 
+    return require_text(response)
+
+
+def generate_with_audio(
+    client,
+    *,
+    prompt: str,
+    audio_bytes: bytes,
+    mime_type: str,
+    model: str = DEFAULT_MODEL,
+    api_key: str | None = None,
+    limit_bytes: int = INLINE_LIMIT_BYTES,
+) -> Reply:
+    """音声を添えて生成し、**本文だけでなく打ち切りの有無も返す**。
+
+    ``generate()`` と分けてあるのは、返す型が違うからである。既存の呼び手
+    （課題1の要約）は本文しか要らず、**そちらは1文字も変えない**。
+
+    **上限を超えたら送らない。** 20MB は inline data の制限で、
+    超えたぶんは Files API に回す必要がある。黙って送ると相手が拒否するが、
+    *その拒否は課金や再試行と混ざって、原因が音声の大きさだと分かりにくい*。
+
+    **空の答えを「できた」にしない**のは ``generate()`` と同じ。
+    ただし**打ち切りは失敗にしない**——途中まででも文字起こしは高いので、
+    捨てるかどうかは呼び手に決めさせる（``finish_reason`` を見て判断する）。
+    """
+    if not (prompt or "").strip():
+        raise ValueError("prompt が空です")
+    if not audio_bytes:
+        raise ValueError("音声が空です")
+    if len(audio_bytes) > limit_bytes:
+        raise ValueError(
+            "音声が {:,} バイトで、1リクエストの上限 {:,} バイトを超えています。"
+            "Files API に回すか、短く区切ってください".format(len(audio_bytes), limit_bytes)
+        )
+
+    part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
+    try:
+        response = client.models.generate_content(
+            model=model, contents=[prompt, part], config=build_config()
+        )
+    except Exception as error:  # noqa: BLE001 - 訳して投げ直す
+        raise translate_error(error, api_key) from error
+
+    return Reply(
+        text=require_text(response),
+        finish_reason=_finish_reason_of(response),
+        prompt_tokens=_usage_of(response, "prompt_token_count"),
+        output_tokens=_usage_of(response, "candidates_token_count"),
+    )
+
+
+def require_text(response: Any) -> str:
+    """本文を取り出し、**空を「できた」にしない**。
+
+    ``generate()`` と ``generate_with_audio()`` の両方が通る。同じ6行を
+    2箇所に置いていたのを1つに寄せた（2026-09-12）——**重複した検査は、
+    片方だけ壊しても気づけない**。ミューテーションで1箇所ずつ壊す作りなので、
+    同じコードが2箇所にあると「置換先が2件」で検査そのものが素通りする。
+
+    空になるのは安全フィルタか打ち切り。空文字を返すと、呼ぶ側は
+    「本文が空だった」ではなく「空という本文」を先へ流してしまう。
+    """
     text = _text_of(response)
     if not text:
         raise ApiError(
             "Gemini が本文を返しませんでした。"
             "安全フィルタで止まったか、出力が打ち切られた可能性があります。"
         )
-
     return text
 
 
 def _text_of(response: Any) -> str:
     """応答から本文を取り出す。None も空白だけも「無し」に寄せる。"""
     return (getattr(response, "text", None) or "").strip()
+
+
+def _finish_reason_of(response: Any) -> str | None:
+    """打ち切りの理由を文字列で取り出す。
+
+    **取れなくても落とさない。** ここで例外にすると、本文は返っているのに
+    全体が失敗になる。取れなかったことは ``None`` として上へ伝え、
+    *「STOP だった」と「見られなかった」を混同させない*。
+    """
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return None
+    reason = getattr(candidates[0], "finish_reason", None)
+    if reason is None:
+        return None
+    return getattr(reason, "name", None) or str(reason)
+
+
+def _usage_of(response: Any, field: str) -> int | None:
+    usage = getattr(response, "usage_metadata", None)
+    value = getattr(usage, field, None) if usage is not None else None
+    return int(value) if isinstance(value, int) else None

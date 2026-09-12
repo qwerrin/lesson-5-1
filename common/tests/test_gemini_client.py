@@ -207,5 +207,114 @@ class Generate(unittest.TestCase):
         self.assertEqual(client.models.calls, [])
 
 
+class FakeAudioModels:
+    """音声版の応答を組む。**本文だけでなく打ち切りと使用量も返す相手。**"""
+
+    def __init__(self, text="[00:01] 話者A: はい。", finish="STOP", usage=(11, 22)):
+        self.calls = []
+        self._text = text
+        self._finish = finish
+        self._usage = usage
+
+    def generate_content(self, *, model, contents, config=None):
+        self.calls.append({"model": model, "contents": contents, "config": config})
+        candidates = []
+        if self._finish is not None:
+            candidates = [SimpleNamespace(finish_reason=SimpleNamespace(name=self._finish))]
+        usage = None
+        if self._usage is not None:
+            usage = SimpleNamespace(
+                prompt_token_count=self._usage[0], candidates_token_count=self._usage[1]
+            )
+        return SimpleNamespace(text=self._text, candidates=candidates, usage_metadata=usage)
+
+
+class FakeAudioClient:
+    def __init__(self, **kw):
+        self.models = FakeAudioModels(**kw)
+
+
+class GenerateWithAudio(unittest.TestCase):
+    """課題3 の音声入力。**generate() とは返す型が違う**ので別の関数にしてある。"""
+
+    def call(self, client, **kw):
+        opts = {"prompt": "文字起こしして", "audio_bytes": b"RIFFxxxx", "mime_type": "audio/wav"}
+        opts.update(kw)
+        return gemini_client.generate_with_audio(client, **opts)
+
+    def test_本文と打ち切りと使用量を返す(self):
+        reply = self.call(FakeAudioClient(text="[00:01] 話者A: はい。"))
+        self.assertEqual(reply.text, "[00:01] 話者A: はい。")
+        self.assertEqual(reply.finish_reason, "STOP")
+        self.assertEqual((reply.prompt_tokens, reply.output_tokens), (11, 22))
+
+    def test_音声が本文と一緒に渡る(self):
+        client = FakeAudioClient()
+        self.call(client, audio_bytes=b"AUDIOBYTES")
+        contents = client.models.calls[0]["contents"]
+        self.assertEqual(contents[0], "文字起こしして")
+        self.assertEqual(contents[1].inline_data.data, b"AUDIOBYTES")
+        self.assertEqual(contents[1].inline_data.mime_type, "audio/wav")
+
+    def test_打ち切りでも本文を返す(self):
+        """**打ち切りを失敗にしない。** 途中まででも文字起こしは高い。
+
+        捨てるかどうかは呼び手が決める。ここで例外にすると、
+        呼び手は何が返ったかを見られないまま止まる。
+        """
+        reply = self.call(FakeAudioClient(finish="MAX_TOKENS"))
+        self.assertEqual(reply.finish_reason, "MAX_TOKENS")
+        self.assertTrue(reply.text)
+
+    def test_打ち切りが読めなければNoneにする(self):
+        """**「STOP だった」と「見られなかった」を混同させない。**"""
+        self.assertIsNone(self.call(FakeAudioClient(finish=None)).finish_reason)
+
+    def test_使用量が無ければNoneにする(self):
+        reply = self.call(FakeAudioClient(usage=None))
+        self.assertIsNone(reply.prompt_tokens)
+        self.assertIsNone(reply.output_tokens)
+
+    def test_空の答えは失敗にする(self):
+        for text in ("", "   ", None):
+            with self.subTest(text=text):
+                with self.assertRaises(gemini_client.ApiError):
+                    self.call(FakeAudioClient(text=text))
+
+    def test_空のプロンプトでは呼ばない(self):
+        client = FakeAudioClient()
+        with self.assertRaises(ValueError):
+            self.call(client, prompt="   ")
+        self.assertEqual(client.models.calls, [])
+
+    def test_空の音声では呼ばない(self):
+        client = FakeAudioClient()
+        with self.assertRaises(ValueError):
+            self.call(client, audio_bytes=b"")
+        self.assertEqual(client.models.calls, [])
+
+    def test_上限を超えたら呼ばない(self):
+        """**黙って送らない。** 相手の拒否は課金や再試行と混ざって読みにくい。"""
+        client = FakeAudioClient()
+        with self.assertRaises(ValueError):
+            self.call(client, audio_bytes=b"x" * 11, limit_bytes=10)
+        self.assertEqual(client.models.calls, [])
+
+    def test_上限ちょうどは呼ぶ(self):
+        client = FakeAudioClient()
+        self.call(client, audio_bytes=b"x" * 10, limit_bytes=10)
+        self.assertEqual(len(client.models.calls), 1)
+
+    def test_APIの失敗は訳して投げ直す(self):
+        class Boom:
+            class models:
+                @staticmethod
+                def generate_content(**kw):
+                    raise api_error(503, "unavailable")
+
+        with self.assertRaises(gemini_client.ApiError):
+            self.call(Boom())
+
+
 if __name__ == "__main__":
     unittest.main()

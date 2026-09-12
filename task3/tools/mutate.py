@@ -58,6 +58,11 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 BUILD = "task3/tools/build_audio.py"
 TRANSCRIBE = "task3/transcribe.py"
 MINUTES = "task3/minutes.py"
+TO_DOC = "task3/to_doc.py"
+#: **移植した関数は壊さない。** あれは check_port.py が移植元と文字単位で
+#: 照合しているので、壊すと「移植と違う」ほうで落ちる——テストが守っている
+#: 証拠にならない。ここで壊すのは、この課題で新しく書いた部分だけ。
+DOCS = "common/docs_client.py"
 #: **common も壊す。** 音声の口（generate_with_audio）をここに足したので、
 #: 対象から外すと「新しく書いた分だけ検査されない」状態になる。
 GEMINI = "common/gemini_client.py"
@@ -69,7 +74,12 @@ IGNORE = shutil.ignore_patterns(
 
 #: **範囲を広げ忘れると、壊したのにテストが1件も走らず「素通り」に見える。**
 #: 判定が正しくても対象が空なら同じ緑になる（課題2 で踏んだ形）。
-TEST_PATHS = ("task3/tests", "common/tests/test_gemini_client.py")
+TEST_PATHS = (
+    "task3/tests",
+    "common/tests/test_gemini_client.py",
+    "common/tests/test_docs_client.py",
+    "common/tests/test_docs_client_read.py",
+)
 
 # (対象ファイル, 壊した内容, 置換前, 置換後)
 MUTATIONS: list[tuple[str, str, str, str]] = [
@@ -530,6 +540,83 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "根拠の時刻と引用を本文に併記しない",
         '        out.append("     根拠 [{}]「{}」".format(where, item.quote))',
         '        out.append("     根拠")',
+    ),
+    # ========================================================== ドキュメント
+    #
+    # 移植した関数は壊さない（check_port.py の担当）。ここは新しく書いた分だけ。
+    (
+        DOCS,
+        "空の本文でも挿入する（空のドキュメントだけがドライブに残る）",
+        "    if not normalized:",
+        "    if False:",
+    ),
+    (
+        DOCS,
+        "検査を通さずに挿入する（ensure_insertable を素通り）",
+        "    return insert_text(service, document_id, ensure_insertable(text))",
+        "    return insert_text(service, document_id, text)",
+    ),
+    (
+        TO_DOC,
+        "ハッシュを短くしすぎる（別の議事録が同じ鍵になる）",
+        "HASH_LENGTH = 16",
+        "HASH_LENGTH = 4",
+    ),
+    (
+        TO_DOC,
+        "内容によらず同じハッシュを返す（何を書いても「もうある」になる）",
+        '    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:HASH_LENGTH]',
+        '    return "x" * HASH_LENGTH',
+    ),
+    (
+        TO_DOC,
+        "会議名が空でもタイトルを作る（無題のドキュメントを量産する）",
+        "    if not name:",
+        "    if False:",
+    ),
+    (
+        TO_DOC,
+        "台帳が無いときにファイルを読みに行く",
+        "    if not p.exists():",
+        "    if False:",
+    ),
+    (
+        TO_DOC,
+        "台帳が辞書でなくてもそのまま返す",
+        "    return data if isinstance(data, dict) else {}",
+        "    return data",
+    ),
+    (
+        TO_DOC,
+        "**重複を見ない**（同じ会議の議事録が2本できる・5-H）",
+        "    if not force and digest in ledger:",
+        "    if False:",
+    ),
+    (
+        TO_DOC,
+        "--force を無視する（作り直せなくなる）",
+        "    if not force and digest in ledger:",
+        "    if digest in ledger:",
+    ),
+    (
+        TO_DOC,
+        "空の検査を外す（空のドキュメントが残る）",
+        "    text = docs_client.ensure_insertable(body)  # 空なら API を呼ぶ前に落ちる",
+        "    text = body",
+    ),
+    (
+        TO_DOC,
+        "台帳に残さない（次回に重複を検出できない）",
+        "    save_ledger(ledger_path, ledger)\n    return created",
+        "    return created",
+    ),
+    (
+        TO_DOC,
+        "**書き出す前に台帳へ残す**（どこにも無い議事録を「ある」と信じ続ける）",
+        "    created = docs_client.create_document_with_text(service, title, text)",
+        '    ledger[digest] = {"documentId": "?", "title": title, "url": ""}\n'
+        "    save_ledger(ledger_path, ledger)\n"
+        "    created = docs_client.create_document_with_text(service, title, text)",
     ),
     # ============================================================ 音声と型の口
     (

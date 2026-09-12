@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""課題3の素材生成を1か所ずつ壊して、テストが落ちることを確かめる。
+
+**テストが通っていることは、守られていることの証拠にならない。**
+
+使い方::
+
+    .venv\\Scripts\\python.exe task3\\tools\\mutate.py
+
+仕組みは課題1・2の ``mutate.py`` と同じ。リポジトリを一時ディレクトリへ写し、
+**写した側だけ**を壊す。成果物には触らないので、途中で強制終了しても壊れたまま
+残らない。**置換先が見つからない（NOT FOUND）は素通りと同じ扱い**にする
+——実装を直して壊しかたを直し忘れると、何も壊さずに全部通って「穴ゼロ」と出る。
+
+この課題で狙う失敗の形
+------------------------------------------------------------------
+
+素材は**成果物ではなく物差し**である。だから狙うのは
+「**音は出るのに、物差しとしては壊れている**」失敗になる。
+音を聞いても分からないところが、課題1・2の「静かに間違った値が残る」と違う。
+
+================================== ==============================================
+壊すと何が起きるか                  なぜ静かなのか
+================================== ==============================================
+フェンスが無くても空で返す          **無音の wav** を作って成功する
+台本0行を通す                       同上。しかも「台本を読んだ」と報告する
+区切りを全部で割る                  本文に縦棒がある行だけ**末尾が切れる**
+間隔が数でなくても 0 にする         被りが消える。**音は普通に鳴る**
+声名を照合しない                    TTS が 44 回目で落ちる。**原因が遠い**
+正解の語が台本に無くても通す        `verify_source` が**永久に一致と言う**
+不在の検査を逆向きにする            チャット限定の語が音声に入っても気づけない
+順序が壊れる重なりを許す            台本と音声の**順番が食い違ったまま成功**
+間隔を足さない                      全部が先頭から重なる。**音としては派手**
+重ねずに上書きする                  片方が消える。**「拾えなかった」と同じ見た目**
+飽和させない                        折り返して**正の大音量が負に化ける**
+余白を残さず切る                    子音の頭が消える。**言葉が変わる**
+全区間が無音でも通す                台本の1行が音として**丸ごと消える**
+末尾を切らない                      被りが**無音としか重ならない**（実際に踏んだ）
+片側の実効値を取り違える            仕込めていない罠を**仕込めたと報告する**
+================================== ==============================================
+
+**「末尾を切らない」は 2026-09-12 に実際に起きた形。** 足し算は
+12,800/12,800 サンプルとも正しかったのに、重なった相手は TTS が付ける
+0.8 秒の無音だった——*混ぜ方が正しいことは、声が被っていることの証拠にならない。*
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
+
+BUILD = "task3/tools/build_audio.py"
+
+IGNORE = shutil.ignore_patterns(
+    ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
+    "docs", "*.png", "*.wav", "_parts", "node_modules",
+)
+
+TEST_PATHS = ("task3/tests",)
+
+# (対象ファイル, 壊した内容, 置換前, 置換後)
+MUTATIONS: list[tuple[str, str, str, str]] = [
+    # ---------------------------------------------------------------- 読み取り
+    (
+        BUILD,
+        "フェンスが無くても空を返す（無音の wav を作って成功する）",
+        '    raise ValueError("{} のフェンスが見つからない".format(marker))',
+        "    return []",
+    ),
+    (
+        BUILD,
+        "台本0行を通す（読んだと報告して無音を作る）",
+        '        raise ValueError("台本が0行。フェンスはあるが中身が無い")',
+        "        pass",
+    ),
+    (
+        BUILD,
+        "区切りを全部で割る（本文の縦棒より後ろが消える）",
+        '        parts = s.split("|", 2)',
+        '        parts = s.split("|")',
+    ),
+    (
+        BUILD,
+        "間隔が数でなくても 0 として通す（被りが静かに消える）",
+        '            raise ValueError("{}行目: 間隔が数でない: {}".format(n, gap_s)) from None',
+        "            gap = 0.0",
+    ),
+    (
+        BUILD,
+        "正解の JSON を先頭行だけ読む",
+        '    return json.loads(" ".join(_fence(md, "json")))',
+        '    return json.loads(_fence(md, "json")[0])',
+    ),
+    # -------------------------------------------------------------------- 照合
+    (
+        BUILD,
+        "声名を照合しない（TTS の 44 回目で落ちる）",
+        "        if speakers and l.voice not in speakers:",
+        "        if False:",
+    ),
+    (
+        BUILD,
+        "正解にある語が台本に無くても通す（照合器が永久に一致と言う）",
+        "            if word and not present(word):",
+        "            if False:",
+    ),
+    (
+        BUILD,
+        "正解の数値が台本に無くても通す",
+        "        if spoken and not present(spoken):",
+        "        if False:",
+    ),
+    (
+        BUILD,
+        "不在の検査を逆向きにする（チャット限定の語が音声に入っても気づけない）",
+        "        if word and present(word):",
+        "        if word and not present(word):",
+    ),
+    # ------------------------------------------------------------------ 時間割
+    (
+        BUILD,
+        "開始が負でも通す",
+        "        if s < 0:",
+        "        if False:",
+    ),
+    (
+        BUILD,
+        "順序が壊れる重なりを許す（台本と音声の順番が食い違ったまま成功）",
+        "        if starts and s < starts[-1]:",
+        "        if False:",
+    ),
+    (
+        BUILD,
+        "間隔を足さない（全部が詰まる）",
+        "        s = end + g",
+        "        s = end",
+    ),
+    # ---------------------------------------------------------------- 重ね合わせ
+    (
+        BUILD,
+        "重ねずに上書きする（片方が消える＝拾えなかったのと同じ見た目）",
+        "        if start >= written_to:",
+        "        if True:",
+    ),
+    (
+        BUILD,
+        "正の側で飽和させない（折り返して大音量が負に化ける）",
+        "                if v > INT16_MAX:\n                    v = INT16_MAX",
+        "                if v > INT16_MAX:\n                    v = 0",
+    ),
+    (
+        BUILD,
+        "出力の長さを全パートの合計にする（隙間と重なりを無視）",
+        "    total = max((s + len(p) for s, p in zip(starts, parts)), default=0)",
+        "    total = sum(len(p) for p in parts)",
+    ),
+    # ------------------------------------------------------- 無音の切り落とし
+    (
+        BUILD,
+        "余白を残さずに切る（子音の頭が消えて言葉が変わる）",
+        "    margin = round(keep * rate)",
+        "    margin = 0",
+    ),
+    (
+        BUILD,
+        "全区間が無音でも通す（台本の1行が音として丸ごと消える）",
+        '        raise ValueError("全区間が無音（発話が入っていない）")',
+        "        return samples",
+    ),
+    (
+        BUILD,
+        "末尾を切らない（被りが無音としか重ならない・2026-09-12 に実際に踏んだ形）",
+        "    hi = n\n    while hi > lo and abs(samples[hi - 1]) < threshold:\n        hi -= 1",
+        "    hi = n",
+    ),
+    (
+        BUILD,
+        "閾値を無視して常に切る（声まで削る）",
+        "    while lo < n and abs(samples[lo]) < threshold:",
+        "    while lo < n and abs(samples[lo]) < 99999:",
+    ),
+    # -------------------------------------------------------- 被りの実効値
+    (
+        BUILD,
+        "実効値を絶対値の平均にする（大きい音の効きが変わる）",
+        "    return (sum(v * v for v in samples) / len(samples)) ** 0.5",
+        "    return sum(abs(v) for v in samples) / len(samples)",
+    ),
+    (
+        BUILD,
+        "空の入力で 0 を返さない（ゼロ除算）",
+        "    if len(samples) == 0:",
+        "    if False:",
+    ),
+    (
+        BUILD,
+        "正の間隔も被りとして報告する",
+        "        if i == 0 or g >= 0:",
+        "        if i == 0:",
+    ),
+    (
+        BUILD,
+        "前側の実効値を後側で埋める（片側無音を見逃す＝仕込めていない罠を仕込めたと報告）",
+        '                "rms_prev": rms(parts[i - 1][off : off + span]),',
+        '                "rms_prev": rms(parts[i][:span]),',
+    ),
+    (
+        BUILD,
+        "被りの長さを秒ではなくサンプル数で返す",
+        '                "seconds": span / rate,',
+        '                "seconds": span,',
+    ),
+]
+
+
+def run_tests(work: Path) -> bool:
+    """写した側でテストを回す。1件でも落ちたら True。"""
+    proc = subprocess.run(
+        # --basetemp を写した側の中に置く。既定の %TEMP% を使うと後片付けで
+        # PermissionError が出て、**壊す前から落ちている**ように見える。
+        [str(PYTHON), "-m", "pytest", *TEST_PATHS, "-x", "-q", "--no-header",
+         "-p", "no:cacheprovider", "--basetemp", str(work / ".pytest_tmp")],
+        cwd=work,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return proc.returncode != 0
+
+
+def main() -> int:
+    if not PYTHON.exists():
+        print(f"仮想環境の Python が見つかりません: {PYTHON}", file=sys.stderr)
+        return 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp) / "repo"
+        shutil.copytree(ROOT, work, ignore=IGNORE)
+
+        if run_tests(work):
+            print("壊す前からテストが落ちています。先にそちらを直してください。", file=sys.stderr)
+            return 1
+
+        killed: list[str] = []
+        survived: list[str] = []
+        not_found: list[str] = []
+
+        for index, (target, label, before, after) in enumerate(MUTATIONS, start=1):
+            path = work / target
+            original = path.read_text(encoding="utf-8", newline="")
+
+            # **照合も書き込みも LF に正規化した文字列で行う。**
+            # core.autocrlf で .py が CRLF になりうる。newline="" のまま複数行の
+            # パターンを探すと一度もマッチせず、素通りと区別が付かない。
+            haystack = original.replace("\r\n", "\n")
+
+            if haystack.count(before) != 1:
+                not_found.append(
+                    f"{index:3}. {label}（{target}・{haystack.count(before)}件一致）"
+                )
+                continue
+
+            path.write_text(haystack.replace(before, after, 1), encoding="utf-8", newline="\n")
+            if run_tests(work):
+                killed.append(f"{index:3}. {label}")
+            else:
+                survived.append(f"{index:3}. {label}（{target}）")
+            path.write_text(original, encoding="utf-8", newline="")
+
+        print(f"壊した箇所: {len(MUTATIONS)}")
+        print(f"  kill（テストが落ちた）: {len(killed)}")
+        print(f"  素通り: {len(survived)}")
+        print(f"  置換先なし: {len(not_found)}")
+
+        if survived:
+            print("\n素通りしたもの（テストが守っていない）:")
+            for line in survived:
+                print(f"  {line}")
+        if not_found:
+            print("\n置換先が見つからなかったもの（壊しかたが古い）:")
+            for line in not_found:
+                print(f"  {line}")
+
+    # **置換先なしを成功にしない。** 何も壊さずに全部通ると「穴ゼロ」に見える。
+    return 0 if not survived and not not_found else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

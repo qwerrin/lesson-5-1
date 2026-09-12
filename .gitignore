@@ -44,3 +44,15 @@ service-account.json
 # コミットのたびに差分が出るノイズにもなる。
 task1/state.json
 task2/logs/
+
+# 課題3 の音声素材と、その中間生成物。
+# meeting/script.md が正本で、lines.txt はそこから抽出した TTS 入力＝派生物。
+# 追跡すると「台本を直したのに lines.txt が古い」状態が git に残せてしまい、
+# **正解データのほうが先に壊れる**（script.md §2 の理由と同じ）。
+task3/meeting/lines.txt
+task3/meeting/*.wav
+task3/meeting/*.mp3
+# **`*.wav` は `/` を跨がない。** 上の行は `_parts/000.wav` に1つも当たらず、
+# 56ファイル・8MB が追跡対象のまま残っていた（2026-09-12 に実測）。
+# この上の service-account.json の欄と同じ形——パターンは意味ではなく名前で照合する。
+task3/meeting/_parts/

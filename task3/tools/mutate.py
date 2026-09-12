@@ -57,6 +57,7 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 
 BUILD = "task3/tools/build_audio.py"
 TRANSCRIBE = "task3/transcribe.py"
+MINUTES = "task3/minutes.py"
 #: **common も壊す。** 音声の口（generate_with_audio）をここに足したので、
 #: 対象から外すと「新しく書いた分だけ検査されない」状態になる。
 GEMINI = "common/gemini_client.py"
@@ -352,7 +353,203 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "    valid = speakers - set(odd)",
         "    valid = speakers",
     ),
-    # ============================================================ 音声の口
+    # ================================================================== 議事録
+    #
+    # 文字起こしの層は「欠ける」失敗を見た。この層は逆に「**足す**」失敗を見る。
+    # 足された文はいちばん自然に読めるので、読んでも気づけない。
+    (
+        MINUTES,
+        "正規化で空白を落とさない（分かち書きの引用が全部「原文に無い」になる）",
+        '    return _SPACE.sub("", unicodedata.normalize("NFKC", text or ""))',
+        '    return unicodedata.normalize("NFKC", text or "")',
+    ),
+    (
+        MINUTES,
+        "全角と半角をそろえない（10月3日 と １０月３日 が別物になる）",
+        '    return _SPACE.sub("", unicodedata.normalize("NFKC", text or ""))',
+        '    return _SPACE.sub("", text or "")',
+    ),
+    (
+        MINUTES,
+        "読めない時刻を 0 として通す（全部が会議の冒頭を指す）",
+        '        raise ValueError("時刻として読めません: {!r}".format(value))',
+        "        return 0",
+    ),
+    (
+        MINUTES,
+        "時刻の「時」を足さない",
+        "+ (int(hours) * 3600 if hours else 0)",
+        "+ 0",
+    ),
+    (
+        MINUTES,
+        "空の引用を一致とみなす（引用を空にすれば照合が必ず通る）",
+        "    if not q:",
+        "    if False:",
+    ),
+    (
+        MINUTES,
+        "見つからなくても先頭の位置を返す（無い引用に時刻が付く）",
+        "    if pos < 0:\n        return None",
+        "    if pos < 0:\n        pos = 0",
+    ),
+    (
+        MINUTES,
+        "引用の出どころを全部先頭の発言にする",
+        "        owner.extend([i] * len(t))",
+        "        owner.extend([0] * len(t))",
+    ),
+    (
+        MINUTES,
+        "打ち切りを見ない（JSON は読めても途中で切れている）",
+        "    elif reply.finish_reason not in OK_FINISH_REASONS:",
+        "    elif False:",
+    ),
+    (
+        MINUTES,
+        "打ち切りが読めなくても黙る",
+        "    if reply.finish_reason is None:",
+        "    if False:",
+    ),
+    (
+        MINUTES,
+        "1件も無いのを見ない（決まらなかったのか拾えなかったのか分からなくなる）",
+        "    if not items:\n        problems.append(",
+        "    if False:\n        problems.append(",
+    ),
+    (
+        MINUTES,
+        "読めない時刻を報告しない",
+        "        if item.at == UNKNOWN_AT:",
+        "        if False:",
+    ),
+    (
+        MINUTES,
+        "音声の長さを超える根拠を見ない",
+        "        elif item.at > duration:",
+        "        elif False:",
+    ),
+    (
+        MINUTES,
+        "空の引用を見ない",
+        "        if not normalize(item.quote):",
+        "        if False:",
+    ),
+    (
+        MINUTES,
+        "**原文に無い引用を見ない**（この層の本命・5-K）",
+        "        if found is None:",
+        "        if False:",
+    ),
+    (
+        MINUTES,
+        "引用の場所と時刻の食い違いを見ない（5-P）",
+        "        elif item.at != UNKNOWN_AT and abs(found - item.at) > QUOTE_TOLERANCE_SEC:",
+        "        elif False:",
+    ),
+    (
+        MINUTES,
+        "食い違いの許容を実質無限にする（検査は残るが一度も鳴らない）",
+        "QUOTE_TOLERANCE_SEC = 20.0",
+        "QUOTE_TOLERANCE_SEC = 100000.0",
+    ),
+    (
+        MINUTES,
+        "終盤まで届いているかを見ない（後半を丸めても成功する・5-F）",
+        "    if cited and max(cited) < duration - TAIL_TOLERANCE_SEC:",
+        "    if False:",
+    ),
+    (
+        MINUTES,
+        "終盤の許容を実質無限にする",
+        "TAIL_TOLERANCE_SEC = 90.0",
+        "TAIL_TOLERANCE_SEC = 100000.0",
+    ),
+    (
+        MINUTES,
+        "チャットログが空でも節を渡す（空の見出しは埋められる）",
+        "    if chat_log.strip():",
+        "    if True:",
+    ),
+    (
+        MINUTES,
+        "議事録に「含んでいないもの」を書かない（読む人は無いものを無かったと読む）",
+        '    lines += ["  - " + s for s in NOT_INCLUDED]',
+        "    lines += []",
+    ),
+    (
+        MINUTES,
+        "議事録に生成元を書かない（二重処理と打ち切りが本文から見えなくなる）",
+        '    lines += ["  - " + s for s in provenance]',
+        "    lines += []",
+    ),
+    (
+        MINUTES,
+        "疑う理由を本文に書かない（共有されるのは議事録だけ）",
+        '        lines += ["  - " + p for p in m.problems]',
+        "        lines += []",
+    ),
+    (
+        MINUTES,
+        "チャット由来の根拠を文字起こしで探す（2026-09-12 に実機で誤検知した形）",
+        "        if item.source == CHAT:",
+        "        if False:",
+    ),
+    (
+        MINUTES,
+        "チャットログを渡していなくても、チャットを根拠にできる",
+        "            if not chat_body:",
+        "            if False:",
+    ),
+    (
+        MINUTES,
+        "チャットに無い引用でも通す（チャットを根拠にすれば何でも書ける）",
+        "            elif normalize(item.quote) not in chat_body:",
+        "            elif False:",
+    ),
+    (
+        MINUTES,
+        "終盤の検査にチャットの時刻を混ぜる（後半を落としても届いたことになる）",
+        "    cited = [i.at for i in items if i.source == AUDIO and i.at != UNKNOWN_AT]",
+        "    cited = [i.at for i in items if i.at != UNKNOWN_AT]",
+    ),
+    (
+        MINUTES,
+        "知らない出どころをそのまま通す（勝手な値で検査を迂回できる）",
+        "        source=source if source in (AUDIO, CHAT) else AUDIO,",
+        "        source=source,",
+    ),
+    (
+        MINUTES,
+        "議事録にチャット由来と書かない（録音から出たように読める）",
+        '            "チャット {}".format(item.at_raw) if item.source == CHAT',
+        '            "チャット {}".format(item.at_raw) if False',
+    ),
+    (
+        MINUTES,
+        "根拠の時刻と引用を本文に併記しない",
+        '        out.append("     根拠 [{}]「{}」".format(where, item.quote))',
+        '        out.append("     根拠")',
+    ),
+    # ============================================================ 音声と型の口
+    (
+        GEMINI,
+        "型を設定に載せない（自由文が返り、空と拾い損ねが同じ見た目になる）",
+        '        options["response_schema"] = json_schema',
+        "        pass",
+    ),
+    (
+        GEMINI,
+        "JSON の mime を立てない",
+        '        options["response_mime_type"] = "application/json"',
+        "        pass",
+    ),
+    (
+        GEMINI,
+        "型を渡していなくても JSON にする（既存の要約の呼び手を壊す）",
+        "    if json_schema is not None:",
+        "    if True:",
+    ),
     (
         GEMINI,
         "音声を載せずに送る（プロンプトだけで「文字起こし」が返る）",

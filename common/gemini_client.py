@@ -162,17 +162,25 @@ def build_client(api_key: str, *, factory: Callable = genai.Client):
 # ------------------------------------------------------------------ 呼び出しの設定
 
 
-def build_config() -> types.GenerateContentConfig:
+def build_config(*, json_schema: Any = None) -> types.GenerateContentConfig:
     """生成の設定を組む。
 
     **自動関数呼び出し（AFC）を切る。** ツールを1つも渡していないのに、
     SDK が stderr へ「Chat.send_message を使え」という勧告を出す
     （2026-08-29 実測）。要約にツールは使わないので、意味の無い行を
     実行画面に残さない。**実行画面は記事のスクリーンショットになる。**
+
+    ``json_schema`` を渡すと、答えをその型で受ける（課題3・議事録）。
+    **自由文にしないのは、空だったことを型で見分けるため**——自由文だと
+    「何も決まらなかった会議」と「決定を拾い損ねた出力」が同じ見た目になる。
     """
-    return types.GenerateContentConfig(
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-    )
+    options: dict[str, Any] = {
+        "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True)
+    }
+    if json_schema is not None:
+        options["response_mime_type"] = "application/json"
+        options["response_schema"] = json_schema
+    return types.GenerateContentConfig(**options)
 
 
 # ------------------------------------------------------------------ エラーの扱い
@@ -284,6 +292,41 @@ def generate_with_audio(
     try:
         response = client.models.generate_content(
             model=model, contents=[prompt, part], config=build_config()
+        )
+    except Exception as error:  # noqa: BLE001 - 訳して投げ直す
+        raise translate_error(error, api_key) from error
+
+    return Reply(
+        text=require_text(response),
+        finish_reason=_finish_reason_of(response),
+        prompt_tokens=_usage_of(response, "prompt_token_count"),
+        output_tokens=_usage_of(response, "candidates_token_count"),
+    )
+
+
+def generate_json(
+    client,
+    *,
+    prompt: str,
+    schema: Any,
+    model: str = DEFAULT_MODEL,
+    api_key: str | None = None,
+) -> Reply:
+    """型を指定して生成する。**返るのは JSON の文字列**（解釈は呼び手の仕事）。
+
+    ここで ``json.loads`` まで済ませないのは、**壊れた JSON が返ったときに
+    原文を見たいから**である。解釈して落ちると、何が返ったか分からないまま
+    課金だけが乗る。
+
+    ``finish_reason`` を返すのは ``generate_with_audio()`` と同じ理由——
+    **打ち切られた JSON は途中で切れており、しかも本文は返る**。
+    """
+    if not (prompt or "").strip():
+        raise ValueError("prompt が空です")
+
+    try:
+        response = client.models.generate_content(
+            model=model, contents=prompt, config=build_config(json_schema=schema)
         )
     except Exception as error:  # noqa: BLE001 - 訳して投げ直す
         raise translate_error(error, api_key) from error

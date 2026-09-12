@@ -316,5 +316,55 @@ class GenerateWithAudio(unittest.TestCase):
             self.call(Boom())
 
 
+
+SCHEMA = {"type": "object", "properties": {"a": {"type": "string"}}}
+
+
+class GenerateJson(unittest.TestCase):
+    """課題3 の議事録。**自由文にしないのは、空だったことを型で見分けるため。**"""
+
+    def test_型を設定に載せる(self):
+        client = FakeAudioClient(text='{"a": "b"}')
+        gemini_client.generate_json(client, prompt="まとめて", schema=SCHEMA)
+        config = client.models.calls[0]["config"]
+        self.assertEqual(config.response_mime_type, "application/json")
+        self.assertEqual(config.response_schema, SCHEMA)
+
+    def test_自動関数呼び出しは切ったまま(self):
+        client = FakeAudioClient(text='{"a": "b"}')
+        gemini_client.generate_json(client, prompt="まとめて", schema=SCHEMA)
+        config = client.models.calls[0]["config"]
+        self.assertTrue(config.automatic_function_calling.disable)
+
+    def test_解釈せず文字列で返す(self):
+        """**壊れた JSON が返ったときに原文を見たい。** ここで落とすと何も残らない。"""
+        client = FakeAudioClient(text='{"a": "b"}')
+        reply = gemini_client.generate_json(client, prompt="まとめて", schema=SCHEMA)
+        self.assertEqual(reply.text, '{"a": "b"}')
+        self.assertEqual(reply.finish_reason, "STOP")
+
+    def test_打ち切りでも本文を返す(self):
+        client = FakeAudioClient(text='{"a":', finish="MAX_TOKENS")
+        reply = gemini_client.generate_json(client, prompt="まとめて", schema=SCHEMA)
+        self.assertEqual(reply.finish_reason, "MAX_TOKENS")
+
+    def test_空のプロンプトでは呼ばない(self):
+        client = FakeAudioClient()
+        with self.assertRaises(ValueError):
+            gemini_client.generate_json(client, prompt="  ", schema=SCHEMA)
+        self.assertEqual(client.models.calls, [])
+
+    def test_空の答えは失敗にする(self):
+        with self.assertRaises(gemini_client.ApiError):
+            gemini_client.generate_json(
+                FakeAudioClient(text=""), prompt="まとめて", schema=SCHEMA)
+
+    def test_型を渡さなければ既定の設定のまま(self):
+        """既存の呼び手（課題1の要約）に影響を出さない。"""
+        config = gemini_client.build_config()
+        self.assertIsNone(config.response_mime_type)
+        self.assertIsNone(config.response_schema)
+
+
 if __name__ == "__main__":
     unittest.main()

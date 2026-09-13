@@ -569,12 +569,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     out = args.out or args.transcript.with_name("minutes.txt")
     out.write_text(body + chr(10), encoding="utf-8", newline=chr(10))
 
+    # **型のまま残す。** 整形した本文からは、根拠の出どころ（audio / chat）も
+    # 引用の原文も取り出せない。`verify_source.py` はこちらを読む
+    # ——*中間成果物を残す理由（DESIGN 2章）は、この層にも同じように効く。*
+    raw_out = out.with_suffix(".json")
+    raw_out.write_text(m.raw + chr(10), encoding="utf-8", newline=chr(10))
+
     print("決定事項: {} 件 / TODO: {} 件 / 論点: {} 件".format(
         len(m.decisions), len(m.todos), len(m.open_issues)))
     print("打ち切り: {}".format(m.reply.finish_reason))
     print("トークン: 入力 {} / 出力 {}".format(
         m.reply.prompt_tokens, m.reply.output_tokens))
-    print("保存    : {}".format(out))
+    print("保存    : {} / {}".format(out, raw_out.name))
     if m.problems:
         print("")
         print("**議事録は作れたが、疑う理由がある**（本文の6章にも書いた）:")

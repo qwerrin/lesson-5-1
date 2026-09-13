@@ -59,6 +59,7 @@ BUILD = "task3/tools/build_audio.py"
 TRANSCRIBE = "task3/transcribe.py"
 MINUTES = "task3/minutes.py"
 TO_DOC = "task3/to_doc.py"
+VERIFY_SRC = "task3/verify_source.py"
 #: **移植した関数は壊さない。** あれは check_port.py が移植元と文字単位で
 #: 照合しているので、壊すと「移植と違う」ほうで落ちる——テストが守っている
 #: 証拠にならない。ここで壊すのは、この課題で新しく書いた部分だけ。
@@ -540,6 +541,143 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "根拠の時刻と引用を本文に併記しない",
         '        out.append("     根拠 [{}]「{}」".format(where, item.quote))',
         '        out.append("     根拠")',
+    ),
+    # ====================================================== ソース側との照合
+    #
+    # ここが落ちても議事録は出る。**出たものが正しいかを、誰も見なくなるだけ。**
+    # 課題2 の講評（DESIGN 11章）が要求している層なので、素通りは許さない。
+    (
+        VERIFY_SRC,
+        "句読点を落とさない（差分が句読点で埋まって本物が隠れる）",
+        '    return _PUNCT.sub("", minutes.normalize(text))',
+        "    return minutes.normalize(text)",
+    ),
+    (
+        VERIFY_SRC,
+        "空の引用で 0 を返さない（ゼロ除算）",
+        "    if not quote:",
+        "    if False:",
+    ),
+    (
+        VERIFY_SRC,
+        "近さを ratio で測る（長い行に短い引用が入っていても低く出る）",
+        "    matched = sum(block.size for block in matcher.get_matching_blocks())\n"
+        "    return matched / len(quote)",
+        "    return matcher.ratio()",
+    ),
+    (
+        VERIFY_SRC,
+        "隣り合う2行を候補にしない（行をまたぐ引用が「見つからない」になる）",
+        "        if i + 1 < len(norms):",
+        "        if False:",
+    ),
+    (
+        VERIFY_SRC,
+        "候補の行まるごとと比べる（対応しない前半が大量に「欠落」として出る）",
+        "            best = (score, matched_span(cand, q))",
+        "            best = (score, cand)",
+    ),
+    (
+        VERIFY_SRC,
+        "読みから表記へそろえない（正しい引用まで「台本と違う」と言う）",
+        "        cand = apply_readings(cand, truth) if truth else cand",
+        "        cand = cand",
+    ),
+    (
+        VERIFY_SRC,
+        "読みの置き換えを短い順にする（長い読みが割れて別物になる）",
+        "    for spoken, value in sorted(pairs, key=lambda kv: -len(kv[0])):",
+        "    for spoken, value in sorted(pairs, key=lambda kv: len(kv[0])):",
+    ),
+    (
+        VERIFY_SRC,
+        "差分に文脈を付けない（どの語が変わったか読めない）",
+        "DIFF_CONTEXT = 2",
+        "DIFF_CONTEXT = 0",
+    ),
+    (
+        VERIFY_SRC,
+        "置き換えと増加を差分に出さない（欠落だけ見る）",
+        '        if tag == "equal":',
+        '        if tag != "delete":',
+    ),
+    (
+        VERIFY_SRC,
+        "「見つからない」の閾値を 0 にする（別のことを言っていても通る）",
+        "FOUND_THRESHOLD = 0.6",
+        "FOUND_THRESHOLD = 0.0",
+    ),
+    (
+        VERIFY_SRC,
+        "「一致」の閾値を下げる（**誤変換を一致として通す**）",
+        "MATCH_THRESHOLD = 0.999",
+        "MATCH_THRESHOLD = 0.5",
+    ),
+    (
+        VERIFY_SRC,
+        "空の引用を通す（引用を空にすれば照合が必ず通る）",
+        "        if not minutes.normalize(it.quote):",
+        "        if False:",
+    ),
+    (
+        VERIFY_SRC,
+        "チャット由来の根拠も台本で探す（必ず「無い」になる）",
+        "            it.quote, chat_lines if it.source == CHAT else lines,",
+        "            it.quote, lines,",
+    ),
+    (
+        VERIFY_SRC,
+        "照合した件数を数えない（N件中N件が出せなくなる）",
+        "        checked += 1",
+        "        pass",
+    ),
+    (
+        VERIFY_SRC,
+        "一致した件数を数えない",
+        "            matched += 1",
+        "            pass",
+    ),
+    (
+        VERIFY_SRC,
+        "決定に必要な語を見ない",
+        "            if normalize_for_match(token) not in decision_text:",
+        "            if False:",
+    ),
+    (
+        VERIFY_SRC,
+        "**撤回された値が決定に残っても通す**（5-K）",
+        "            if normalize_for_match(token) in decision_text:",
+        "            if False:",
+    ),
+    (
+        VERIFY_SRC,
+        "誤った固有名詞が決定にあっても通す（大和商事／千二百個）",
+        "        if wrong and normalize_for_match(wrong) in decision_text:",
+        "        if False:",
+    ),
+    (
+        VERIFY_SRC,
+        "論点の決定への格上げを見ない（T6）",
+        "        if score > LINK_THRESHOLD and hit is not None:",
+        "        if False:",
+    ),
+    (
+        VERIFY_SRC,
+        "**担当の食い違いを見ない**（5-J が表に出なくなる）",
+        '        if got_owner and got_owner != clean_owner(want.get("owner", "")):',
+        "        if False:",
+    ),
+    (
+        VERIFY_SRC,
+        "敬称を落とさない（小林 と 小林さん を別人にする）",
+        '    return _HONORIFIC.sub("", minutes.normalize(name))',
+        "    return minutes.normalize(name)",
+    ),
+    (
+        VERIFY_SRC,
+        "チャットを使っていなくても、音声に無い語を許す（創作が通る）",
+        "    if not chat_used:",
+        "    if False:",
     ),
     # ========================================================== ドキュメント
     #

@@ -210,9 +210,26 @@ def ensure_insertable(text: str) -> str:
 
 
 def insert_text_checked(service, document_id: str, text: str) -> dict:
-    """`insert_text` の前に `ensure_insertable` を通す。
+    """`insert_text` を、前後の検査で挟む。
+
+    **前**: `ensure_insertable` を通す（空なら API を呼ばない）。
+    **後**: 送ったリクエスト数と、返った `replies` の数を突き合わせる。
+
+    `batchUpdate` は**部分的に成功しうる**（`DESIGN.md` 5-L）。成功コードだけを
+    見ていると、*一部が入らなかったドキュメントを「書けた」として次へ流す*。
 
     **移植した `insert_text` はそのまま残す。** 中身を変えると
     「移植元と1文字も違わない」が言えなくなり、`tools/check_port.py` が落ちる。
     """
-    return insert_text(service, document_id, ensure_insertable(text))
+    body = ensure_insertable(text)
+    sent = len(build_insert_requests(body))
+    response = insert_text(service, document_id, body)
+    got = len(response.get("replies") or [])
+    if got != sent:
+        raise DocError(
+            "送った {} 件に対して、返った replies が {} 件です。"
+            "一部が入っていない可能性があります（documentId: {}）".format(
+                sent, got, document_id
+            )
+        )
+    return response

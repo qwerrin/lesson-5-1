@@ -325,6 +325,23 @@ class TestEnsureInsertable:
         docs_client.insert_text_checked(service, "DOC", "本文")
         assert documents.batch_calls
 
+    def test_返ったrepliesの数を確かめる(self, service, documents):
+        """**batchUpdate は部分的に成功しうる**（5-L）。成功コードだけで信じない。"""
+        documents.batch_result = {"replies": []}
+        with pytest.raises(docs_client.DocError) as caught:
+            docs_client.insert_text_checked(service, "DOC", "本文")
+        assert "replies" in str(caught.value)
+
+    def test_数が合っていれば通す(self, service, documents):
+        documents.batch_result = {"replies": [{}]}
+        assert docs_client.insert_text_checked(service, "DOC", "本文")["replies"]
+
+    def test_repliesが無くても数えられる(self, service, documents):
+        """**鍵が無いのを 0 件として扱う。** None で落ちると原因が遠くなる。"""
+        documents.batch_result = {}
+        with pytest.raises(docs_client.DocError):
+            docs_client.insert_text_checked(service, "DOC", "本文")
+
     def test_空ならAPIを呼ばない(self, service, documents):
         with pytest.raises(docs_client.DocError):
             docs_client.insert_text_checked(service, "DOC", "")

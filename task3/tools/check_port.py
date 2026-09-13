@@ -58,6 +58,33 @@ PORTS = [
         "constants": (CREATE, ["DEFAULT_SCOPES", "BODY_START_INDEX", "DOCUMENT_URL_TEMPLATE"]),
     },
     {
+        "dst": ROOT / "task3" / "verify_doc.py",
+        "from": [
+            (VERIFY, [
+                "Check", "_content", "extract_text", "count_paragraphs",
+                "strip_document_trailing_newline", "_preview",
+                "compare_with_expected", "all_ok", "format_checks",
+            ]),
+        ],
+        # 入口は移植元にも同名であるが、**中身は別物**（--body / --title を取る）。
+        # 名前が同じだから移植した、にしないため明示的に新規として並べる。
+        "added": {"build_parser", "_default_service_factory", "main"},
+        "constants": (VERIFY, ["PREVIEW_LIMIT"]),
+    },
+    {
+        "dst": ROOT / "task3" / "tests" / "test_verify_doc.py",
+        "from": [
+            (SRC / "tests" / "test_verify_doc.py", [
+                "paragraph", "make_document", "document_with",
+                "TestExtractText", "TestCountParagraphs",
+                "TestStripDocumentTrailingNewline", "TestCompareWithExpected",
+                "TestAllOk", "TestFormatChecks",
+            ]),
+        ],
+        "added": set(),
+        "constants": None,
+    },
+    {
         "dst": ROOT / "common" / "tests" / "test_docs_client.py",
         "from": [
             (SRC / "tests" / "test_create_doc.py", [

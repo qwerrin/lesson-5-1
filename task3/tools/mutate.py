@@ -691,8 +691,20 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         DOCS,
         "検査を通さずに挿入する（ensure_insertable を素通り）",
-        "    return insert_text(service, document_id, ensure_insertable(text))",
-        "    return insert_text(service, document_id, text)",
+        "    body = ensure_insertable(text)",
+        "    body = text",
+    ),
+    (
+        DOCS,
+        "**返った replies の数を見ない**（部分的に成功しても「書けた」と流す・5-L）",
+        "    if got != sent:",
+        "    if False:",
+    ),
+    (
+        DOCS,
+        "replies の数を送った数で埋める（照合が必ず通る）",
+        '    got = len(response.get("replies") or [])',
+        "    got = sent",
     ),
     (
         TO_DOC,

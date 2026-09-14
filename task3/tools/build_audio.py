@@ -46,6 +46,20 @@ LINES_TXT = MEETING / "lines.txt"
 PARTS_DIR = MEETING / "_parts"
 OUT_WAV = MEETING / "meeting.wav"
 TTS_PS1 = HERE / "tts_lines.ps1"
+REPO = HERE.parents[1]
+
+
+def shown(path: Path) -> str:
+    """画面に出す用のパス。**リポジトリからの相対にする。**
+
+    絶対パスのまま出すと利用者名を含むホームのパスが実行画面に残り、
+    *そのままスクリーンショットとして公開される*（課題2 で実際に踏んだ）。
+    **伏せるのではなく、最初から出さない。**
+    """
+    try:
+        return str(path.relative_to(REPO))
+    except ValueError:
+        return str(path)
 
 
 @dataclass(frozen=True)
@@ -404,7 +418,7 @@ def main() -> int:
     for l, d in zip(lines, durations):
         by_voice[l.voice] = by_voice.get(l.voice, 0.0) + d
 
-    print("出力 : {}".format(OUT_WAV))
+    print("出力 : {}".format(shown(OUT_WAV)))
     print(
         "長さ : {:.2f} 秒（{}分{:02d}秒）".format(
             total, int(total // 60), int(total % 60)

@@ -216,6 +216,25 @@ def test_負の側も飽和する():
     assert max(out) < 0
 
 
+# --------------------------------------------- 画面に出すもの（公開される）
+
+def test_画面にはリポジトリからの相対パスを出す():
+    """**実行画面はそのままスクリーンショットになる。**
+
+    絶対パスを出すと `C:/Users/<利用者名>` が公開物に残る（課題2 で踏んだ）。
+    *伏せるのではなく、最初から出さない。*
+    """
+    got = build_audio.shown(build_audio.OUT_WAV)
+    assert got == str(Path("task3") / "meeting" / "meeting.wav")
+    assert "Users" not in got
+
+
+def test_外のパスはそのまま出す():
+    """**リポジトリの外は相対にできない。** 黙って壊さず、そのまま返す。"""
+    outside = Path(build_audio.REPO).parent / "どこか" / "x.wav"
+    assert build_audio.shown(outside) == str(outside)
+
+
 # -------------------------------------------------- 実物の台本を物差しにする
 
 def test_実物の台本が読めて正解と食い違わない():

@@ -419,7 +419,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if result.problems:
         print("")
-        print("**正常終了したが、疑う理由がある**:")
+        print("正常終了したが、疑う理由がある:")
         for p in result.problems:
             print("  -", p)
         return 2

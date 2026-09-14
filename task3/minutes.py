@@ -583,7 +583,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("保存    : {} / {}".format(out, raw_out.name))
     if m.problems:
         print("")
-        print("**議事録は作れたが、疑う理由がある**（本文の6章にも書いた）:")
+        print("議事録は作れたが、疑う理由がある（本文の6章にも書いた）:")
         for p in m.problems:
             print("  -", p)
         return 2

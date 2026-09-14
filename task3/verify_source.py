@@ -397,7 +397,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not report.findings:
         say("")
-        say("所見なし。**ただし台本に無いことは、この検査でも見えない**（DESIGN 6章）")
+        say("所見なし。ただし台本に無いことは、この検査でも見えない（DESIGN 6章）")
         return 0
 
     say("")

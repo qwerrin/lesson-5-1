@@ -236,7 +236,7 @@ def main(argv: Sequence[str] | None = None, *, service_factory: Callable | None 
     print("照合: {} 項目中 {} 項目が一致".format(
         len(checks), sum(1 for c in checks if c.ok)))
     if all_ok(checks):
-        print("**ただし、これは出力側の検査である。** 台本と合っているかは verify_source.py")
+        print("ただし、これは出力側の検査である。台本と合っているかは verify_source.py")
         return 0
     return 2
 

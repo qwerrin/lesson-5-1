@@ -153,7 +153,7 @@ def values_of(path: Path, names: list[str]) -> dict[str, object]:
 def main() -> int:
     if not SRC.exists():
         print("移植元が見つかりません: {}".format(SRC), file=sys.stderr)
-        print("**確かめられませんでした。** 一致とは報告しません。", file=sys.stderr)
+        print("確かめられませんでした。一致とは報告しません。", file=sys.stderr)
         return 1
 
     same = 0

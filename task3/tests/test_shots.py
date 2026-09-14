@@ -10,6 +10,7 @@
 折り返し     全角を2で数える。数えないと帯が枠からはみ出て、絵が崩れる
 記号落とし   `**` を残すと画面に markdown が出る。ここは端末であって記事ではない
 実在の確認   コマンドが**実在するファイル**を指していること。名前を変えたら気づく
+生成物の除外 追跡していないものの**存在を要求しない**。他人の手元では必ず落ちる
 番号の一意   同じ番号が2つあると、片方が永久に呼ばれない
 ============ ====================================================================
 """
@@ -19,10 +20,27 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "task3" / "tools"))
 
 import shots  # noqa: E402
+
+#: 追跡していない生成物の拡張子。**存在を要求してはいけない。**
+#:
+#: `.gitignore` で外してあるので、**クローンした人の手元にも、
+#: ミューテーションの写し（`*.wav` を除外している）にも無い**。
+#: 存在を求めると *他人の環境では必ず落ちるテスト* になる
+#: ——2026-09-14 に実際そうなり、ミューテーションが
+#: 「壊す前からテストが落ちています」で止まった。
+#:
+#: **同じ日に2回踏んだ形。** `posted.json`（台帳）を追跡すると
+#: クローンした人が一度も動かせない、というのと**同じ間違い**である
+#: ——*生成物を前提にすると、自分の手元でしか通らない*。
+GENERATED = (".wav",)
+
+CHECKED = (".py", ".txt", ".json") + GENERATED
 
 
 def test_全角は2で数える():
@@ -59,15 +77,49 @@ def test_主張が空の手順は無い():
         assert label.strip(), number
 
 
-def test_コマンドが実在するファイルを指す():
-    """**名前を変えたら気づく。** 撮影の場で「そんなファイルは無い」と出ないように。"""
-    for number, _, _, cmd, _ in shots.STEPS:
+def check_paths(steps) -> None:
+    """手順のコマンドが指す先を確かめる。
+
+    生成物だけは**置き場**を見る。ファイルそのものは手元にしか無いが、
+    *フォルダの名前を変えたら気づきたい*ので、親までは確かめる。
+    """
+    for number, _, _, cmd, _ in steps:
         if cmd is None:
             continue  # 06 はドキュメントIDが要るので実行時に組む
         for arg in cmd[1:]:
-            if arg.endswith(".py") or arg.endswith(".wav") or arg.endswith(".txt") \
-               or arg.endswith(".json"):
-                assert (ROOT / arg).exists(), "{}: {} が無い".format(number, arg)
+            if not arg.endswith(CHECKED):
+                continue
+            target = ROOT / arg
+            if arg.endswith(GENERATED):
+                assert target.parent.is_dir(), "{}: {} の置き場が無い".format(number, arg)
+            else:
+                assert target.exists(), "{}: {} が無い".format(number, arg)
+
+
+def test_コマンドが実在するファイルを指す():
+    """**名前を変えたら気づく。** 撮影の場で「そんなファイルは無い」と出ないように。"""
+    check_paths(shots.STEPS)
+
+
+def test_生成物は存在を要求しない():
+    """**この判定そのものを検査する。** 手元にあると、区別できているか分からない。
+
+    実在しない `.wav` を混ぜた偽の手順で、**無いファイルでも通ること**を確かめる。
+    *手元にある状態でだけ試すと、生成物の分岐を1度も通らない。*
+    """
+    check_paths([("99", "偽", "偽", ["py", "task3/meeting/ありえない.wav"], False)])
+
+
+def test_生成物でもフォルダが無ければ落ちる():
+    """置き場まで見なくなったら、フォルダの改名に気づけない。"""
+    with pytest.raises(AssertionError):
+        check_paths([("99", "偽", "偽", ["py", "task3/そんなフォルダは無い/x.wav"], False)])
+
+
+def test_追跡しているファイルは存在を要求する():
+    """生成物の扱いを広げすぎると、**改名を1つも捕まえなくなる**。"""
+    with pytest.raises(AssertionError):
+        check_paths([("99", "偽", "偽", ["py", "task3/ありえない.py"], False)])
 
 
 def test_06だけは実行時に組む():

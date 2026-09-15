@@ -51,6 +51,11 @@ task2/logs/
 # ——2026-09-14、実機を1回通した直後に気づいた（除外されていなかった）。
 task3/meeting/posted.json
 
+# 課題3 の発展（決定事項を LINE に流す）の送信済み台帳。**まったく同じ理由。**
+# 追跡すると、クローンした人の手元で「もう送った」から始まり、
+# AlreadyNotified で止まって一度も送れない。messageId も public には要らない。
+task3/meeting/notified.json
+
 # 課題3 の音声素材と、その中間生成物。
 # meeting/script.md が正本で、lines.txt はそこから抽出した TTS 入力＝派生物。
 # 追跡すると「台本を直したのに lines.txt が古い」状態が git に残せてしまい、

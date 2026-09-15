@@ -67,6 +67,9 @@ DOCS = "common/docs_client.py"
 #: **common も壊す。** 音声の口（generate_with_audio）をここに足したので、
 #: 対象から外すと「新しく書いた分だけ検査されない」状態になる。
 GEMINI = "common/gemini_client.py"
+#: 発展機能（決定事項だけを LINE に流す）。**足した分を対象に入れ忘れると、
+#: 「新しく書いた所だけ誰も見ていない」状態が緑で通る。**
+NOTIFY = "task3/notify.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -822,6 +825,149 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "使用量を読まない（課金された側の値が残らない）",
         "    return int(value) if isinstance(value, int) else None",
         "    return None",
+    ),
+    # ---------------------------------------------------------------- 発展（LINE 通知）
+    #
+    # ここで狙うのは「**送れてしまう**」失敗である。上の素材の穴と向きが逆で、
+    # 止まらないほうが危ない——通数は月200通しかなく、送ったものは取り消せない。
+    (
+        NOTIFY,
+        "decisions が無くても0件として通す（読めていないのに何も決まらなかった会議として配る）",
+        '    if not isinstance(minutes, dict) or "decisions" not in minutes:',
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "decisions が一覧でなくても通す（文字列を1文字ずつ決定として数える）",
+        "    if not isinstance(decisions, list):",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "0件のときに何も書かない（空の通知が届く）",
+        '        lines.append("決定事項なし（この会議では何も決まりませんでした）")',
+        "        pass",
+    ),
+    (
+        NOTIFY,
+        "件数を数えず常に0件と書く",
+        '        "決定 {} 件".format(len(decisions)),',
+        '        "決定 0 件",',
+    ),
+    (
+        NOTIFY,
+        "逐語が無くても空の鉤括弧で出す（根拠の有無が見分けられない）",
+        '    evidence = "「{}」".format(quote) if quote else "（逐語なし）"',
+        '    evidence = "「{}」".format(quote)',
+    ),
+    (
+        NOTIFY,
+        "本文が空の決定を空行として出す（数から静かに消える）",
+        '    text = str(item.get("text") or "").strip() or "（本文なし）"',
+        '    text = str(item.get("text") or "").strip()',
+    ),
+    (
+        NOTIFY,
+        "時刻が無くても空のまま出す",
+        '    at = str(item.get("at") or "").strip() or "時刻不明"',
+        '    at = str(item.get("at") or "").strip()',
+    ),
+    (
+        NOTIFY,
+        "会議の名前を入れない（どの会議の決定か分からない通知）",
+        "        doc_title,",
+        '        "",',
+    ),
+    (
+        NOTIFY,
+        "全文のリンクを入れない（決定だけ抜いた文脈を戻せない）",
+        '        "全文: {}".format(doc_url),',
+        '        "",',
+    ),
+    (
+        NOTIFY,
+        "含まないものを書かない（TODO も伝えたつもりになる）",
+        '            "※この通知は決定事項だけです。TODO・論点は全文にあります。",',
+        '            "",',
+    ),
+    (
+        NOTIFY,
+        "書き出していない議事録でも送る（読み手が全文を開けない）",
+        '    if not isinstance(entry, dict) or not str(entry.get("url") or "").strip():',
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "二度目も送る（5-H を外す・通数を溶かす）",
+        "    if not force and digest in ledger:",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "送る前に台帳へ残す（送れていない通知を「送った」と信じ続ける）",
+        "    usage_before = line_send.fetch_usage(session, secrets=secrets)",
+        "    usage_before = line_send.fetch_usage(session, secrets=secrets); "
+        "to_doc.save_ledger(ledger_path, {**ledger, digest: {}})",
+    ),
+    (
+        NOTIFY,
+        "送信後の通数を読まない（増分が「増えていない」と区別できない）",
+        "        usage_after: int | None = line_send.fetch_usage(session, secrets=secrets)",
+        "        usage_after = usage_before",
+    ),
+    (
+        NOTIFY,
+        "宛先を生のまま記録する",
+        '        "to_masked": line_send.mask_destination(to),',
+        '        "to_masked": to,',
+    ),
+    (
+        NOTIFY,
+        "決定の件数を記録しない",
+        '            decisions=len(data["decisions"]),',
+        "            decisions=0,",
+    ),
+    (
+        NOTIFY,
+        "--force を無視する",
+        "            force=args.force,",
+        "            force=False,",
+    ),
+    (
+        NOTIFY,
+        "二度目を成功として返す（cron から見ると毎回成功に見える）",
+        "        return 3",
+        "        return 0",
+    ),
+    (
+        NOTIFY,
+        "dry-run でも送る（確認のつもりが本番送信）",
+        "    if args.dry_run:",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "壊れた台帳を黙って通す（重複の検査が効いていないことを言わない）",
+        "    if Path(ledger_path).exists() and not to_doc.load_ledger(ledger_path):",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "書き出し台帳が無くても進む（別の失敗と同じ文言になる）",
+        "    if not posted_path.exists():",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "本文ファイルが無くても進む（リンクを引く鍵が無いまま進む）",
+        "    if not body_path.exists():",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "議事録が JSON でなくても進む",
+        "    except (json.JSONDecodeError, UnicodeDecodeError) as error:",
+        "    except (UnicodeDecodeError,) as error:",
     ),
 ]
 

@@ -46,6 +46,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 
 COLLECT = "figset/collect.py"
+GUARD = "figset/guard.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -194,11 +196,202 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "NAME_TIME_TOLERANCE = timedelta(seconds=2)",
         "NAME_TIME_TOLERANCE = timedelta(days=3650)",
     ),
+    # ================================================================== guard
+    # **ここで狙うのは「止めなかったこと」と「言わなかったこと」。**
+    # どちらも例外を出さず、画面上は平穏に見える。
+    # ------------------------------------------------------------ ポリシー
+    (
+        GUARD,
+        "空のポリシーを許す（何を通しても見つかりませんでしたと答える）",
+        "        if not self.rules:",
+        "        if False:",
+    ),
+    (
+        GUARD,
+        "規則の大小を区別する（`C:\\USERS\\...` が静かに素通りする）",
+        "    return Rule(name, re.compile(re.escape(text), re.IGNORECASE))",
+        "    return Rule(name, re.compile(re.escape(text)))",
+    ),
+    (
+        GUARD,
+        "そのままの文字列を正規表現として扱う（記号が意味を持ってしまう）",
+        "re.compile(re.escape(text), re.IGNORECASE)",
+        "re.compile(text, re.IGNORECASE)",
+    ),
+    (
+        GUARD,
+        "ポリシーに既定値を置く（値がずれたとき黙って検査ゼロ）",
+        "    policy: Policy,",
+        "    policy: Policy = Policy((Rule('なし', re.compile(r'(?!x)x')),)),",
+    ),
+    # ---------------------------------------------------------------- 走査
+    (
+        GUARD,
+        "当たっていない規則まで返す（全部が秘匿に見える）",
+        "    return tuple(rule for rule in policy.rules if rule.pattern.search(text))",
+        "    return tuple(rule for rule in policy.rules)",
+    ),
+    (
+        GUARD,
+        "何も当てない（すべて綺麗に見える）",
+        "    return tuple(rule for rule in policy.rules if rule.pattern.search(text))",
+        "    return ()",
+    ),
+    # ------------------------------------------------------------- path 層
+    (
+        GUARD,
+        "パスを見ない（名前に入った秘匿を見逃す）",
+        "    for rule in _scan(str(path), policy):",
+        '    for rule in _scan("", policy):',
+    ),
+    (
+        GUARD,
+        "パスを見たと申告しない（見た層と見ていない層の区別が消える）",
+        "    checked.append(PATH)",
+        "    pass",
+    ),
+    # --------------------------------------------------------- metadata 層
+    (
+        GUARD,
+        "読めなかったメタデータを見たことにする（欠けたぶんが安全側に化ける）",
+        "        unchecked.append(METADATA)",
+        "        checked.append(METADATA)",
+    ),
+    (
+        GUARD,
+        "空と読めなかったを混ぜる（文字チャンクが無いだけで未検査になる）",
+        "    if texts is None:",
+        "    if not texts:",
+    ),
+    (
+        GUARD,
+        "PNG の署名を見ない（PNG でないものを読んだことにする）",
+        "    if not data.startswith(_PNG_SIGNATURE):",
+        "    if False:",
+    ),
+    (
+        GUARD,
+        "途中で切れていても読めたぶんで済ます（切れた先が安全側に化ける）",
+        "        if end + 4 > len(data):\n            return None  # 途中で切れている",
+        "        if False:\n            return None  # 途中で切れている",
+    ),
+    (
+        GUARD,
+        "IEND に辿り着かなくても読めたことにする",
+        "    return None  # IEND に辿り着いていない",
+        "    return chunks  # IEND に辿り着いていない",
+    ),
+    (
+        GUARD,
+        "zTXt を見ない（圧縮された文字チャンクが素通りする）",
+        '        elif tag == b"zTXt":',
+        "        elif False:",
+    ),
+    (
+        GUARD,
+        "iTXt を見ない（日本語の文字チャンクが素通りする）",
+        '        elif tag == b"iTXt":',
+        "        elif False:",
+    ),
+    (
+        GUARD,
+        "チャンクのキーを走査しない（キー自体が秘匿のとき当たらない）",
+        '            for rule in _scan(f"{key}\\n{value}", policy):',
+        "            for rule in _scan(value, policy):",
+    ),
+    (
+        GUARD,
+        "当たった場所の名前を伏せない（場所の名前が秘匿でありうる）",
+        '            where = f"{tag}:{redact(key, policy)}"',
+        '            where = f"{tag}:{key}"',
+    ),
+    # ------------------------------------------------------------ pixels 層
+    (
+        GUARD,
+        "OCR を渡しても画素を見ない（差し込んだ検査が繋がっていない）",
+        "        for rule in _scan(ocr(path), policy):",
+        '        for rule in _scan("", policy):',
+    ),
+    (
+        GUARD,
+        "OCR 無しでも画素を見たことにする（見ていないのに安全と言う）",
+        "        unchecked.append(PIXELS)",
+        "        checked.append(PIXELS)",
+    ),
+    # ---------------------------------------------------------------- 判定
+    (
+        GUARD,
+        "見つかっても止めない（危ないと分かったものを保留にする）",
+        "        if self.findings:",
+        "        if False:",
+    ),
+    (
+        GUARD,
+        "見ていない層があっても安全と言う（未検査が成功に化ける）",
+        # `if self.unchecked:` は status と report の2箇所にある。
+        # **1行だけで書くと置換先が2件見つかり、何も壊さず「異常なし」に見える。**
+        "        if self.unchecked:\n            return UNKNOWN",
+        "        if False:\n            return UNKNOWN",
+    ),
+    # ---------------------------------------------------------------- 報告
+    (
+        GUARD,
+        "報告にフルパスを載せる（報告そのものが漏洩経路になる）",
+        '        lines = [f"{self.label}: {self.status}"]',
+        '        lines = [f"{self.path}: {self.status}"]',
+    ),
+    (
+        GUARD,
+        "名前を伏せずに載せる（ファイル名そのものが秘匿でありうる）",
+        "        label=redact(path.name, policy),",
+        "        label=path.name,",
+    ),
+    (
+        GUARD,
+        "伏せ字が全部を塗りつぶす（人が場所を追えなくなる）",
+        "        out = rule.pattern.sub(MASK, out)",
+        "        out = MASK",
+    ),
+    (
+        GUARD,
+        "伏せ字が何もしない（伏せたつもりで素通り）",
+        "        out = rule.pattern.sub(MASK, out)",
+        "        pass",
+    ),
 ]
 
 
-def run_tests(work: Path) -> bool:
-    """写した側でテストを回す。1件でも落ちたら True。"""
+#: pytest の終了コード。**「テストが落ちた」は 1 だけ。**
+#: 2=中断 / 3=内部エラー / 4=使い方の誤り / 5=1件も集まらなかった。
+#: これらを kill と数えると、**壊していないのに「壊したら落ちた」と報告する**。
+PYTEST_FAILED = 1
+
+
+def run_tests(work: Path) -> tuple[int, str]:
+    """写した側でテストを回して、終了コードと出力の末尾を返す。
+
+    **`!= 0` を kill と数えない。** この課題のリポジトリでは、後片付けで
+    `PermissionError: [WinError 5]` が出ることがある（README に既出）。
+    それはテストの失敗ではないのに終了コードは 0 でなくなるので、
+    *壊していない変更まで「テストが落ちた」に化ける*。
+
+    バイトコードのキャッシュを止める理由
+    ------------------------------------------------------------------
+
+    **`.pyc` は (mtime の秒, ファイルサイズ) で有効性を判断する。**
+    置換前と置換後が**同じ長さ**のミューテーションを当てて、同じ秒のうちに
+    書き戻すと、**壊れたままの `.pyc` が生き残る**。しかもその後そのファイルを
+    書き換えないかぎり、**以降ずっと壊れたコードが走る**。
+
+    2026-09-20 に実際に踏んだ。`NAME_TIME_TOLERANCE = timedelta(seconds=2)` と
+    `NAME_TIME_TOLERANCE = timedelta(days=3650)` は**どちらも42文字**で、
+    これを当てた #20 のあと `collect.py` は最後まで壊れたままになり、
+    **#21 以降の25件が全部「kill」に化けた**（`-x` が毎回そこで止まるため）。
+
+    *同じ長さに置換した1件が、それ以降の全件を汚染する。*
+    しかも症状は「全部 kill＝完璧」に見えるので、**成功の顔をして現れる**。
+    """
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     proc = subprocess.run(
         # --basetemp を写した側の中に置く。既定の %TEMP% を使うと後片付けで
         # PermissionError が出て、**壊す前から落ちている**ように見える。
@@ -209,8 +402,10 @@ def run_tests(work: Path) -> bool:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
     )
-    return proc.returncode != 0
+    tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-6:])
+    return proc.returncode, tail
 
 
 def main() -> int:
@@ -222,13 +417,16 @@ def main() -> int:
         work = Path(tmp) / "repo"
         shutil.copytree(ROOT, work, ignore=IGNORE)
 
-        if run_tests(work):
+        baseline, tail = run_tests(work)
+        if baseline != 0:
             print("壊す前からテストが落ちています。先にそちらを直してください。", file=sys.stderr)
+            print(tail, file=sys.stderr)
             return 1
 
         killed: list[str] = []
         survived: list[str] = []
         not_found: list[str] = []
+        errored: list[str] = []
 
         for index, (target, label, before, after) in enumerate(MUTATIONS, start=1):
             path = work / target
@@ -246,16 +444,21 @@ def main() -> int:
                 continue
 
             path.write_text(haystack.replace(before, after, 1), encoding="utf-8", newline="\n")
-            if run_tests(work):
+            code, tail = run_tests(work)
+            if code == PYTEST_FAILED:
                 killed.append(f"{index:3}. {label}")
-            else:
+            elif code == 0:
                 survived.append(f"{index:3}. {label}（{target}）")
+            else:
+                # **測れなかったものを kill に混ぜない。**
+                errored.append(f"{index:3}. {label}（exit {code}）\n      {tail}")
             path.write_text(original, encoding="utf-8", newline="")
 
         print(f"壊した箇所: {len(MUTATIONS)}")
         print(f"  kill（テストが落ちた）: {len(killed)}")
         print(f"  素通り: {len(survived)}")
         print(f"  置換先なし: {len(not_found)}")
+        print(f"  測定不能: {len(errored)}")
 
         if survived:
             print("\n素通りしたもの（テストが守っていない）:")
@@ -265,9 +468,15 @@ def main() -> int:
             print("\n置換先が見つからなかったもの（壊しかたが古い）:")
             for line in not_found:
                 print(f"  {line}")
+        if errored:
+            print("\n測定不能だったもの（テストの失敗ではない理由で終了した）:")
+            for line in errored:
+                print(f"  {line}")
 
-    # **置換先なしを成功にしない。** 何も壊さずに全部通ると「穴ゼロ」に見える。
-    return 0 if not survived and not not_found else 1
+    # **置換先なしも測定不能も、成功にしない。**
+    # 何も壊さずに全部通ると「穴ゼロ」に見えるし、
+    # 測れなかったものを kill に数えると「守られている」に化ける。
+    return 0 if not (survived or not_found or errored) else 1
 
 
 if __name__ == "__main__":

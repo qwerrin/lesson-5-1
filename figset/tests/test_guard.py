@@ -87,23 +87,47 @@ def _user_policy() -> guard.Policy:
     return guard.Policy((guard.literal_rule("利用者名", USER),))
 
 
-def _png(path: Path, *, text: tuple[str, str] | None = None) -> Path:
-    """最小の PNG を書く。`text` を渡すと tEXt チャンクを1つ挟む。
+def _chunk(tag: bytes, data: bytes) -> bytes:
+    """PNG のチャンク1つ。長さ・種別・中身・CRC。"""
+    body = tag + data
+    return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+
+def _png(
+    path: Path,
+    *,
+    text: tuple[str, str] | None = None,
+    ztxt: tuple[str, str] | None = None,
+    itxt: tuple[str, str] | None = None,
+    truncate: int = 0,
+) -> Path:
+    """最小の PNG を書く。文字チャンクは3種類とも作れる。
 
     Pillow に依存させない——**依存を足すと、この検査自体が環境の都合で落ちる**。
+
+    `truncate` を渡すと**末尾をそのバイト数だけ削る**。途中で切れたファイルを
+    「読めたぶんだけ読んだ」で済ませていないかを見るために使う。
     """
 
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        body = tag + data
-        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
-
+    chunk = _chunk
     w = h = 2
     raw = b"".join(b"\x00" + b"\xff\xff\xff" * w for _ in range(h))
     blob = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
     if text is not None:
         key, value = text
         blob += chunk(b"tEXt", key.encode("latin-1") + b"\x00" + value.encode("latin-1"))
+    if ztxt is not None:
+        key, value = ztxt
+        payload = key.encode("latin-1") + b"\x00\x00" + zlib.compress(value.encode("utf-8"))
+        blob += chunk(b"zTXt", payload)
+    if itxt is not None:
+        key, value = itxt
+        # keyword \0 圧縮フラグ 圧縮方式 言語 \0 訳語 \0 本文（非圧縮）
+        payload = key.encode("utf-8") + b"\x00\x00\x00" + b"\x00" + b"\x00" + value.encode("utf-8")
+        blob += chunk(b"iTXt", payload)
     blob += chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+    if truncate:
+        blob = blob[:-truncate]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(blob)
     return path
@@ -165,6 +189,16 @@ def test_パスが綺麗なら見つけない(tmp_path: Path) -> None:
     assert got.findings == ()
 
 
+def test_パスは常に見たことにする(tmp_path: Path) -> None:
+    """**見た層を申告しないと、見ていない層との区別が付かない。**"""
+    png = _png(tmp_path / "a.png")
+
+    got = guard.inspect(png, _policy())
+
+    assert guard.PATH in got.checked
+    assert guard.PATH not in got.unchecked
+
+
 # --------------------------------------------------------------------------
 # metadata 層（PNG の tEXt）
 # --------------------------------------------------------------------------
@@ -208,6 +242,89 @@ def test_壊れたPNGはメタデータを見ていないことにする(tmp_pat
     got = guard.inspect(broken, _policy())
 
     assert guard.METADATA in got.unchecked
+
+
+def test_途中で切れたPNGは読めなかったことにする(tmp_path: Path) -> None:
+    """**読めたぶんだけ読んで「見た」と言わない。**
+
+    途中で切れたファイルは、切れた先に何が入っていたか分からない。
+    それを「綺麗だった」と同じ扱いにすると、*欠けたぶんが安全側に化ける*。
+    """
+    png = _png(tmp_path / "a.png", text=("Software", "ShareX"), truncate=12)
+
+    got = guard.inspect(png, _policy())
+
+    assert guard.METADATA in got.unchecked
+
+
+def test_署名が無ければチャンクを読まない(tmp_path: Path) -> None:
+    """**PNG だと名乗っていないものを、PNG として読まない。**
+
+    中身がチャンクとして読めてしまう形をしていても、署名が無いなら PNG ではない。
+    ここを飛ばすと、*PNG でないファイルを読んで「見た」と申告する*ことになる。
+
+    このファイルは署名だけが違い、**中に秘匿文字列を入れてある**。
+    署名を見ていれば「未検査」で、見ていなければ「見つけた」になる
+    ——**どちらに転んだかで、署名を見たかどうかが分かる。**
+    """
+    blob = b"NOT-APNG"  # 署名と同じ8バイトぶんの別物
+    blob += _chunk(b"tEXt", b"Software\x00" + SECRET.encode("latin-1"))
+    blob += _chunk(b"IEND", b"")
+    target = tmp_path / "a.png"
+    target.write_bytes(blob)
+
+    got = guard.inspect(target, _policy())
+
+    assert guard.METADATA in got.unchecked
+    assert got.findings == ()
+
+
+def test_CRCまで読めないチャンクは読めなかったことにする(tmp_path: Path) -> None:
+    """**チャンクは長さ・種別・中身・CRC で1つ。** CRC が無いなら読み切っていない。
+
+    末尾の 4 バイト（IEND の CRC）だけを削る。読み切ったことにすると、
+    *手前の tEXt に入れた秘匿文字列を「見た上で見つけた」と報告してしまう*
+    ——**見たことにしてはいけない。**
+    """
+    png = _png(tmp_path / "a.png", text=("Software", SECRET), truncate=4)
+
+    got = guard.inspect(png, _policy())
+
+    assert guard.METADATA in got.unchecked
+    assert guard.METADATA not in got.checked
+
+
+def test_文字チャンクが無いPNGは見たことにする(tmp_path: Path) -> None:
+    """**「読んだが空だった」と「読めなかった」を混ぜない。**
+
+    どちらも見つかった件数は0だが、意味はまったく違う。
+    """
+    png = _png(tmp_path / "a.png")
+
+    got = guard.inspect(png, _policy())
+
+    assert guard.METADATA in got.checked
+    assert guard.METADATA not in got.unchecked
+
+
+def test_zTXtチャンクを見る(tmp_path: Path) -> None:
+    """**圧縮された文字チャンクも中身は文字。** 読まなければ素通りする。"""
+    png = _png(tmp_path / "a.png", ztxt=("Comment", f"path={SECRET}"))
+
+    got = guard.inspect(png, _policy())
+
+    assert got.status == guard.BLOCKED
+    assert got.findings[0].where == "zTXt:Comment"
+
+
+def test_iTXtチャンクを見る(tmp_path: Path) -> None:
+    """日本語が入るのはこちら（UTF-8）。**`tEXt` だけ見ていると落ちる。**"""
+    png = _png(tmp_path / "a.png", itxt=("説明", f"保存先は {SECRET} です"))
+
+    got = guard.inspect(png, _policy())
+
+    assert got.status == guard.BLOCKED
+    assert got.findings[0].where == "iTXt:説明"
 
 
 def test_トークンの形に一致すれば止める(tmp_path: Path) -> None:
@@ -322,11 +439,18 @@ def test_秘匿文字列を含む名前は伏せて出す(tmp_path: Path) -> Non
 
 
 def test_チャンクの名前が秘匿でも伏せて出す(tmp_path: Path) -> None:
-    """**当たった場所の名前も、当たったものでありうる。**"""
-    png = _png(tmp_path / "a.png", text=(USER, "なんでもない値"))
+    """**当たった場所の名前も、当たったものでありうる。**
+
+    値は ASCII にする——`tEXt` は仕様上 latin-1 しか入らない
+    （日本語を入れるなら `iTXt`）。**ここで見たいのはキーのほう。**
+    """
+    png = _png(tmp_path / "a.png", text=(USER, "nothing special"))
 
     got = guard.inspect(png, _user_policy())
 
+    # **キーも走査の対象。** 値だけ見ていると、ここで当たらない。
+    assert got.status == guard.BLOCKED
+    assert [f.layer for f in got.findings] == [guard.METADATA]
     assert USER not in got.report
 
 

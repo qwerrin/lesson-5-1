@@ -107,6 +107,25 @@ def test_画像だけ拾う(tmp_path: Path) -> None:
     assert sorted(s.path.name for s in got.shots) == ["a.png", "b.jpg", "c.jpeg", "d.webp"]
 
 
+def test_拡張子の大小を問わない(tmp_path: Path) -> None:
+    """`.PNG` で保存されることがある。**大文字だと1枚も拾わない**のは静かな事故。"""
+    when = datetime(2026, 9, 14, 23, 11, 1)
+    _put(tmp_path, "SHOT.PNG", PNG_A, when)
+
+    got = collect.collect([tmp_path])
+
+    assert [s.path.name for s in got.shots] == ["SHOT.PNG"]
+
+
+def test_画像の名前のフォルダは拾わない(tmp_path: Path) -> None:
+    """**フォルダは画像ではない。** 拾うと枚数が増え、中身を読む段で初めて落ちる。"""
+    (tmp_path / "まぎらわしい.png").mkdir()
+
+    got = collect.collect([tmp_path])
+
+    assert got.shots == ()
+
+
 # --------------------------------------------------------------------------
 # 順序（H2）
 # --------------------------------------------------------------------------
@@ -128,6 +147,41 @@ def test_撮影時刻の昇順に並ぶ(tmp_path: Path) -> None:
     got = collect.collect([tmp_path])
 
     assert [s.path.name for s in got.shots] == [early[0], late[0]]
+
+
+def test_名前の順と撮影順が逆でも撮影順に並ぶ(tmp_path: Path) -> None:
+    """**上のテストだけでは、並べ替えを検査できていなかった。**
+
+    `_shot()` は時刻からファイル名を作るので、早い順＝名前順になる。
+    Windows の `iterdir()` は名前順に返すため、*並べ替えを消しても通ってしまう*
+    ——2026-09-19 のミューテーションで実際に素通りした。
+
+    **名前順と撮影順を食い違わせて初めて、並べ替えを検査したことになる。**
+    """
+    early = datetime(2026, 9, 14, 23, 0, 0)
+    late = datetime(2026, 9, 14, 23, 30, 0)
+    _put(tmp_path, "01-late.png", PNG_A, late)
+    _put(tmp_path, "99-early.png", PNG_B, early)
+
+    got = collect.collect([tmp_path])
+
+    assert [s.path.name for s in got.shots] == ["99-early.png", "01-late.png"]
+
+
+def test_同時刻は名前順で決まる(tmp_path: Path) -> None:
+    """撮影時刻が同じとき、**並びが実行のたびに入れ替わらない**こと。
+
+    ルートを2つ渡し、**後ろのルートに名前が若いほう**を置く。
+    並べ替えが時刻だけを見ていると、`sort` が安定なぶん
+    *渡した順（= b が先）* が残る。名前まで見ていれば a が先に来る。
+    """
+    when = datetime(2026, 9, 14, 23, 11, 1)
+    _put(tmp_path / "root1", "b.png", PNG_A, when)
+    _put(tmp_path / "root2", "a.png", PNG_B, when)
+
+    got = collect.collect([tmp_path / "root1", tmp_path / "root2"])
+
+    assert [s.path.name for s in got.shots] == ["a.png", "b.png"]
 
 
 # --------------------------------------------------------------------------

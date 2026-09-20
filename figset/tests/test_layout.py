@@ -89,6 +89,12 @@ def test_図版の定義が空なら作れない() -> None:
 
 
 def test_記事番号が重複していたら作れない() -> None:
+    """**重複を別の検査で数えない。** 重複があれば 1..N の連番にはなりえない。
+
+    最初は重複用の検査を別に置いていたが、2026-09-20 のミューテーションで
+    *消しても誰も困らない*ことが出た（連番の検査が必ず先に捕まえる）。
+    ここで見ているのは「重複が弾かれること」で、**どの行が弾くかではない**。
+    """
     figs = (_fig("x", 1, 4, "x"), _fig("y", 1, 5, "y"))
     with pytest.raises(ValueError):
         layout.plan([], figs, {})
@@ -125,6 +131,17 @@ def test_実行番号が無い図版があってよい() -> None:
     figs = (_fig("x", 1, 4, "x"), _fig("y", 2, None, "y"))
     got = layout.plan([], figs, {})
     assert [f.shots_no for f in got.missing] == [4, None]
+
+
+def test_手動の図版は2つ以上あってよい() -> None:
+    """**「番号が無い」は重複ではない。**
+
+    手で撮ったものが2枚あるのは普通のこと。*欠けている者同士を
+    「同じ番号だ」と数えると、正しい定義が弾かれる*。
+    """
+    figs = (_fig("x", 1, None, "x"), _fig("y", 2, None, "y"))
+    got = layout.plan([], figs, {})
+    assert [f.key for f in got.missing] == ["x", "y"]
 
 
 # --------------------------------------------------------------------------
@@ -165,6 +182,21 @@ def test_撮影順と記事順が食い違っても記事順に並ぶ() -> None:
 
     assert [p.figure.article_no for p in got.placements] == [1, 2, 3]
     assert [p.shot for p in got.placements] == [first, third, second]
+
+
+def test_定義の並び順に関係なく記事順に並ぶ() -> None:
+    """**上のテストだけでは、並べ替えを検査できていない。**
+
+    定義を記事順に書いてしまうと、*並べ替えを消しても結果が変わらない*。
+    `collect` の「名前順と撮影順がたまたま一致していた」と同じ罠なので、
+    ここでは**定義をわざと逆順で渡す**。
+    """
+    a, b = _shot("a", 0), _shot("b", 1)
+    figs = (_fig("y", 2, 5, "y"), _fig("x", 1, 4, "x"))
+
+    got = layout.plan([a, b], figs, {a.sha256: "x", b.sha256: "y"})
+
+    assert [p.figure.key for p in got.placements] == ["x", "y"]
 
 
 def test_実行順でも取り出せる() -> None:

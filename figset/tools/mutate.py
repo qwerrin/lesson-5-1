@@ -58,6 +58,7 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 
 COLLECT = "figset/collect.py"
 GUARD = "figset/guard.py"
+LAYOUT = "figset/layout.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -357,6 +358,140 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "伏せ字が何もしない（伏せたつもりで素通り）",
         "        out = rule.pattern.sub(MASK, out)",
         "        pass",
+    ),
+    # ================================================================= layout
+    # **ここで狙うのは「2系統の番号を混ぜること」と「決めきれていないものを
+    # 決めたふりで通すこと」。** どちらも出力は揃って見える。
+    # ------------------------------------------------------------ 定義の検証
+    (
+        LAYOUT,
+        "空の定義を通す（何を渡しても全部没・欠け無しで成功する）",
+        "    if not figures:",
+        "    if False:",
+    ),
+    (
+        LAYOUT,
+        "記事番号の連番を要求しない（重複も抜けも通る。1枚が静かに消える）",
+        "    if article_numbers != list(range(1, len(figures) + 1)):",
+        "    if False:",
+    ),
+    (
+        LAYOUT,
+        "実行番号の重複を許す（撮影の段取りが取り違う）",
+        "    if len(set(shots_numbers)) != len(shots_numbers):",
+        "    if False:",
+    ),
+    (
+        LAYOUT,
+        "番号の無い図版を重複として数える（手で撮ったものが2枚あると弾かれる）",
+        "    shots_numbers = [f.shots_no for f in figures if f.shots_no is not None]",
+        "    shots_numbers = [f.shots_no for f in figures]",
+    ),
+    # ---------------------------------------------------------------- 割付
+    (
+        LAYOUT,
+        "名前で割り付ける（名前は変わる。ハッシュで指さないと迷子になる）",
+        "        key = assignments.get(shot.sha256)",
+        "        key = assignments.get(shot.path.name)",
+    ),
+    (
+        LAYOUT,
+        "記事順に並べない（定義に書いた順がそのまま記事の順になる）",
+        "    for figure in sorted(figures, key=lambda f: f.article_no):",
+        "    for figure in figures:",
+    ),
+    # ------------------------------------------------------------ 2系統の番号
+    (
+        LAYOUT,
+        "ファイル名に実行番号を使う（**2系統を混ぜる**）",
+        "        return f\"{self.figure.article_no:02d}-{self.figure.slug}",
+        "        return f\"{self.figure.shots_no:02d}-{self.figure.slug}",
+    ),
+    (
+        LAYOUT,
+        "記事番号を0詰めしない（1 と 10 が並び替えで入れ替わる）",
+        "{self.figure.article_no:02d}-",
+        "{self.figure.article_no}-",
+    ),
+    (
+        LAYOUT,
+        "拡張子を png に決め打つ（中身と名前が食い違う）",
+        "{self.shot.path.suffix.lower()}",
+        ".png",
+    ),
+    (
+        LAYOUT,
+        "実行順で番号の無いものを先頭に回す（手撮りが実行の列に割り込む）",
+        "                    p.figure.shots_no is None,",
+        "                    False,",
+    ),
+    (
+        LAYOUT,
+        "実行順が実行番号を見ない（記事順と同じものを返す）",
+        "                    p.figure.shots_no if p.figure.shots_no is not None else 0,",
+        "                    0,",
+    ),
+    # ------------------------------------------------------ 没・孤児・欠け・食い違い
+    (
+        LAYOUT,
+        "没を捨てる（撮ったが使わなかった、と撮っていない、が混ざる）",
+        "            rejected.append(shot)\n            continue",
+        "            continue",
+    ),
+    (
+        LAYOUT,
+        "没を並べ替えない（撮影順が保たれない）",
+        "    rejected.sort(key=lambda s: (s.captured_at, s.path.name))",
+        "    pass",
+    ),
+    (
+        LAYOUT,
+        "孤児を没に混ぜる（割り付けた意思が消える）",
+        "            if key not in orphans:\n                orphans.append(key)",
+        "            rejected.append(shot)",
+    ),
+    (
+        LAYOUT,
+        "知らないキーを見ない（割り付けた絵が黙って消える）",
+        "        if key not in known:",
+        "        if False:",
+    ),
+    (
+        LAYOUT,
+        "欠けを出さない（撮り忘れが表に出ない）",
+        "            missing.append(figure)",
+        "            pass",
+    ),
+    (
+        LAYOUT,
+        "食い違いを黙って1枚に決める（どちらを使ったか誰も知らない）",
+        "            conflicts[figure.key] = tuple(found)",
+        "            placements.append(Placement(figure, found[0]))",
+    ),
+    # ---------------------------------------------------------------- 判定
+    (
+        LAYOUT,
+        "欠けがあっても完成と言う",
+        "        if self.missing or self.orphans or self.conflicts:",
+        "        if self.orphans or self.conflicts:",
+    ),
+    (
+        LAYOUT,
+        "孤児があっても完成と言う",
+        "        if self.missing or self.orphans or self.conflicts:",
+        "        if self.missing or self.conflicts:",
+    ),
+    (
+        LAYOUT,
+        "食い違いがあっても完成と言う",
+        "        if self.missing or self.orphans or self.conflicts:",
+        "        if self.missing or self.orphans:",
+    ),
+    (
+        LAYOUT,
+        "没を未完成に数える（撮り直しが異常になる）",
+        "        if self.missing or self.orphans or self.conflicts:",
+        "        if self.missing or self.orphans or self.conflicts or self.rejected:",
     ),
 ]
 

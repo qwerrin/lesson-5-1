@@ -145,14 +145,35 @@ def test_定義に無いファイルが混ざっていたら不合格(tmp_path: 
 
 
 def test_同じ図版に複数のファイルがあれば不合格(tmp_path: Path) -> None:
-    """**どれを貼ったのか決まらない。** 拡張子違いは静かに増える。"""
+    """**どれを貼ったのか決まらない。** 拡張子違いは静かに増える。
+
+    `status` だけ見ると弱い——**1枚を勝手に選んで残りを「紛れ込み」に落としても
+    不合格にはなる**ので、*曖昧として挙げたこと*まで確かめる。
+    """
     figs = (_fig("x", 1, "x"),)
     docs = _docs(tmp_path, figs)
     (docs / "01-x.jpg").write_bytes(b"?")
 
     got = verify_figs.verify(figs, docs, reader=_reader(verify_figs.MATCH))
 
+    assert got.ambiguous_files == ("01-x.jpg", "01-x.png")
+    assert got.stray_files == ()
     assert got.status == verify_figs.FAILED
+
+
+def test_定義の並び順に関係なく記事順に報告する(tmp_path: Path) -> None:
+    """**定義を記事順に書いていると、並べ替えを消しても結果が変わらない。**
+
+    `collect` と `layout` で2回踏んだ罠なので、ここでは**わざと逆順で渡す**。
+    """
+    figs = (_fig("y", 2, "y"), _fig("x", 1, "x"))
+    docs = _docs(tmp_path, figs)
+    (docs / "01-x.png").unlink()
+    (docs / "02-y.png").unlink()
+
+    got = verify_figs.verify(figs, docs, reader=_reader(verify_figs.MATCH))
+
+    assert got.missing_files == ("01-x.png", "02-y.png")
 
 
 # --------------------------------------------------------------------------

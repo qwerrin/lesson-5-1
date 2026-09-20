@@ -60,6 +60,7 @@ COLLECT = "figset/collect.py"
 GUARD = "figset/guard.py"
 LAYOUT = "figset/layout.py"
 EMIT = "figset/emit.py"
+VERIFY = "figset/verify_figs.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -679,6 +680,157 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "ポリシーに既定値を置く（伏せ字が黙って無効になる）",
         "def emit(plan: Layout, docs: Path, policy: Policy) -> Emission:",
         "def emit(plan: Layout, docs: Path, policy: Policy = None) -> Emission:",
+    ),
+    # ============================================================ verify_figs
+    # **ここで狙うのは「見ていないのに合格と言うこと」。**
+    # 照合ツールが緑を出すのは簡単で、*緑の意味*だけが難しい。
+    # ------------------------------------------------------------ 定義 ↔ 出力
+    (
+        VERIFY,
+        "欠けを見ない（撮り忘れが合格で通る）",
+        "            missing.append(f\"{stem}.png\")  # 拡張子は分からないので既定を出す\n            continue",
+        "            continue",
+    ),
+    (
+        VERIFY,
+        "紛れ込みを見ない（定義に無い絵が黙って docs に残る）",
+        "        if p.is_file() and p.name not in NOT_FIGURES and p.name not in claimed",
+        "        if False",
+    ),
+    (
+        VERIFY,
+        "複数見つかっても1枚を勝手に選ぶ（どれを貼ったか誰も知らない）",
+        "        if len(found) > 1:",
+        "        if False:",
+    ),
+    (
+        VERIFY,
+        "記事順に見ない（報告の並びが定義の書き順になる）",
+        "    for figure in sorted(figures, key=lambda f: f.article_no):",
+        "    for figure in figures:",
+    ),
+    (
+        VERIFY,
+        "書き出し先が無くても確かめたことにする（物差しが無いのに判定する）",
+        "    if not docs.is_dir():",
+        "    if False:",
+    ),
+    # ------------------------------------------------------------ 出力 ↔ 出力
+    (
+        VERIFY,
+        "対応表に載っているかを見ない（表から消えても気づけない）",
+        "        if target.name not in listed:",
+        "        if False:",
+    ),
+    (
+        VERIFY,
+        "HTML に貼られているかを見ない（貼り忘れが通る）",
+        "        if target.name not in linked:",
+        "        if False:",
+    ),
+    (
+        VERIFY,
+        "src ではなく alt を集める（貼られていないのに貼られたことになる）",
+        "r'<img[^>]*\\ssrc=\"([^\"]+)\"'",
+        "r'<img[^>]*\\salt=\"([^\"]+)\"'",
+    ),
+    # ---------------------------------------------------------------- ソース側
+    (
+        VERIFY,
+        "読み手が無くても見たことにする（ソース側を1度も開かずに合格）",
+        "    if reader is None:\n        unchecked.append(SOURCE)",
+        "    if False:\n        unchecked.append(SOURCE)",
+    ),
+    (
+        VERIFY,
+        "主張が無い図版を一致として通す（**照合0件を一致にする**）",
+        "        if not figure.expects:",
+        "        if False:",
+    ),
+    (
+        VERIFY,
+        "主張を1件しか見ない（2件目以降が誰にも確かめられない）",
+        "        for expect in figure.expects:",
+        "        for expect in figure.expects[:1]:",
+    ),
+    (
+        VERIFY,
+        "読み手に主張を渡さない（何と突き合わせたのか分からない）",
+        "            answer = reader(target, expect)",
+        '            answer = reader(target, "")',
+    ),
+    (
+        VERIFY,
+        "読めた実際の値を捨てる（不一致だけ分かって、何がどう違うか残らない）",
+        "            checks.append(Check(figure.key, expect, answer.verdict, answer.note))",
+        '            checks.append(Check(figure.key, expect, answer.verdict, ""))',
+    ),
+    # ---------------------------------------------------------------- 判定
+    (
+        VERIFY,
+        "不一致を見ない（主張と絵が食い違っても合格）",
+        "        if self._broken or any(c.verdict == MISMATCH for c in self.checks):",
+        "        if self._broken:",
+    ),
+    (
+        VERIFY,
+        "出力側の壊れを見ない（欠けも紛れ込みも合格で通る）",
+        "        if self._broken or any(c.verdict == MISMATCH for c in self.checks):",
+        "        if any(c.verdict == MISMATCH for c in self.checks):",
+    ),
+    (
+        VERIFY,
+        "未検査の層を無視する（見ていないのに合格と言う）",
+        "            self.unchecked\n            or self.no_expectations",
+        "            False\n            or self.no_expectations",
+    ),
+    (
+        VERIFY,
+        "主張なしを無視する（問う相手が無いのに一致と言う）",
+        "            or self.no_expectations\n            or any(c.verdict != MATCH for c in self.checks)",
+        "            or False\n            or any(c.verdict != MATCH for c in self.checks)",
+    ),
+    (
+        VERIFY,
+        "読めなかったものを合格に倒す（**M8：読めないと問題なしを混ぜる**）",
+        "            or any(c.verdict != MATCH for c in self.checks)\n        ):",
+        "            or False\n        ):",
+    ),
+    (
+        VERIFY,
+        "表に無いものを壊れに数えない",
+        "            or self.unlisted",
+        "            or False",
+    ),
+    (
+        VERIFY,
+        "貼られていないものを壊れに数えない",
+        "            or self.unlinked",
+        "            or False",
+    ),
+    (
+        VERIFY,
+        "曖昧なものを壊れに数えない",
+        "            or self.ambiguous_files",
+        "            or False",
+    ),
+    (
+        VERIFY,
+        "一致の件数を全件として数える（読めなかったものまで一致に化ける）",
+        "        return sum(1 for check in self.checks if check.verdict == MATCH)",
+        "        return len(self.checks)",
+    ),
+    (
+        VERIFY,
+        "見た件数を0と言う（何件見たか分からない）",
+        "    def total(self) -> int:\n        return len(self.checks)",
+        "    def total(self) -> int:\n        return 0",
+    ),
+    (
+        VERIFY,
+        "図版0件でも検査したことにする（対象が空でも異常なしと答える）",
+        "    if not figures:",
+        "    if False:",
     ),
 ]
 

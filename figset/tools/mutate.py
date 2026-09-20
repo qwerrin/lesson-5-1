@@ -59,6 +59,7 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 COLLECT = "figset/collect.py"
 GUARD = "figset/guard.py"
 LAYOUT = "figset/layout.py"
+EMIT = "figset/emit.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -492,6 +493,192 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "没を未完成に数える（撮り直しが異常になる）",
         "        if self.missing or self.orphans or self.conflicts:",
         "        if self.missing or self.orphans or self.conflicts or self.rejected:",
+    ),
+    # =================================================================== emit
+    # **ここで狙うのは「書いたつもり」と「伏せたつもり」。**
+    # どちらも `docs/` には何かが生まれるので、画面上は成功に見える。
+    # ---------------------------------------------------------- コピーと読み戻し
+    (
+        EMIT,
+        "読み戻さずに照合したことにする（コピーが壊れていても気づかない）",
+        "        if hashlib.sha256(target.read_bytes()).hexdigest() == placement.shot.sha256:",
+        "        if True:",
+    ),
+    (
+        EMIT,
+        "1枚も書かない（docs は作られるので成功に見える）",
+        "    for placement in plan.placements:\n        target = docs / placement.filename",
+        "    for placement in plan.placements[:0]:\n        target = docs / placement.filename",
+    ),
+    (
+        EMIT,
+        "最初から照合済みとして数える（0枚でも成功に見える）",
+        "    verified = 0",
+        "    verified = 1",
+    ),
+    (
+        EMIT,
+        "同じ中身でも書き換える（差分が毎回出て、本当の変更が埋もれる）",
+        "        if path.read_bytes() == body:\n            return UNCHANGED",
+        "        if False:\n            return UNCHANGED",
+    ),
+    (
+        EMIT,
+        "上書きを変更なしと言う（前に何があったかが消える）",
+        "        path.write_bytes(body)\n        return REPLACED",
+        "        path.write_bytes(body)\n        return UNCHANGED",
+    ),
+    (
+        EMIT,
+        "新規を上書きと言う（初回から「前があった」ことになる）",
+        "    path.write_bytes(body)\n    return CREATED",
+        "    path.write_bytes(body)\n    return REPLACED",
+    ),
+    (
+        EMIT,
+        "どの名前を聞かれても最初の結果を返す",
+        "            if written.path.name == name:",
+        "            if True:",
+    ),
+    (
+        EMIT,
+        "知らない名前に「変更なし」を返す（嘘の既定値）",
+        '        raise KeyError(f"書き出していない: {name}")',
+        "        return UNCHANGED",
+    ),
+    # ---------------------------------------------------------------- 対応表
+    (
+        EMIT,
+        "実行番号を載せない（2系統のうち片方しか出ない）",
+        '        shots_no = "（手動）" if figure.shots_no is None else f"{figure.shots_no:02d}"',
+        '        shots_no = ""',
+    ),
+    (
+        EMIT,
+        "状態を載せない（欠けたまま完成した顔で貼られる）",
+        '        f"状態: **{plan.status}**",',
+        '        "",',
+    ),
+    # **`_readme` と `_ledger` は同じ式を持つ。** 短く書くと2件一致して素通りに化ける。
+    (
+        EMIT,
+        "欠けを対応表に出さない（撮り忘れが表に出ない）",
+        "{safe(f.caption)}）\" for f in plan.missing]",
+        "{safe(f.caption)}）\" for f in []]",
+    ),
+    (
+        EMIT,
+        "孤児を対応表に出さない（割り付けた意思が消える）",
+        "[f\"- `{safe(key)}`\" for key in plan.orphans]",
+        "[f\"- `{safe(key)}`\" for key in []]",
+    ),
+    (
+        EMIT,
+        "食い違いを対応表に出さない（決まっていないことが伝わらない）",
+        "for s in shots)\n            for key, shots in plan.conflicts.items()",
+        "for s in shots)\n            for key, shots in {}.items()",
+    ),
+    (
+        EMIT,
+        "台帳に欠けを載せない（機械で読める記録から撮り忘れが消える）",
+        '        "missing": [safe(f.key) for f in plan.missing],',
+        '        "missing": [],',
+    ),
+    (
+        EMIT,
+        "台帳に孤児を載せない",
+        '        "orphans": [safe(key) for key in plan.orphans],',
+        '        "orphans": [],',
+    ),
+    (
+        EMIT,
+        "台帳に食い違いを載せない",
+        "            safe(key): [s.sha256 for s in shots] for key, shots in plan.conflicts.items()",
+        "            safe(key): [s.sha256 for s in shots] for key, shots in {}.items()",
+    ),
+    (
+        EMIT,
+        "没を対応表に出さない（撮った枚数と載った枚数が合わなくなる）",
+        "for shot in plan.rejected",
+        "for shot in []",
+    ),
+    (
+        EMIT,
+        "空の節ごと消す（見ていないのか無いのかが分からない）",
+        '    lines += list(body) if body else ["（なし）"]',
+        "    lines += list(body)",
+    ),
+    (
+        EMIT,
+        "対応表で伏せない（原本の名前がそのまま記事に乗る）",
+        "def _readme(plan: Layout, policy: Policy) -> str:\n"
+        "    def safe(text: str) -> str:\n"
+        "        return redact(text, policy)",
+        "def _readme(plan: Layout, policy: Policy) -> str:\n"
+        "    def safe(text: str) -> str:\n"
+        "        return text",
+    ),
+    # ------------------------------------------------------------------ HTML
+    (
+        EMIT,
+        "HTML で特殊文字を逃がさない（貼った先で崩れる）",
+        "        return html.escape(redact(text, policy), quote=True)",
+        "        return redact(text, policy)",
+    ),
+    (
+        EMIT,
+        "HTML で伏せない（逃がしただけで秘匿はそのまま）",
+        "        return html.escape(redact(text, policy), quote=True)",
+        "        return html.escape(text, quote=True)",
+    ),
+    (
+        EMIT,
+        "HTML を記事順の逆に並べる",
+        "    for placement in plan.placements:\n        figure = placement.figure\n        blocks.append(",
+        "    for placement in reversed(plan.placements):\n        figure = placement.figure\n        blocks.append(",
+    ),
+    (
+        EMIT,
+        "img の src に図版のキーを使う（書き出した名前と食い違う）",
+        '<img src="{safe(placement.filename)}"',
+        '<img src="{safe(figure.key)}"',
+    ),
+    # ------------------------------------------------------------------ 台帳
+    (
+        EMIT,
+        "台帳で原本を名前で指す（名前は採用時に変わる）",
+        '                "sha256": p.shot.sha256,',
+        '                "sha256": p.shot.path.name,',
+    ),
+    (
+        EMIT,
+        "台帳に没を載せない（撮ったが使わなかったものが消える）",
+        "            for s in plan.rejected",
+        "            for s in []",
+    ),
+    (
+        EMIT,
+        "台帳が常に完成と言う（欠けを隠す）",
+        '        "status": plan.status,\n        "complete": plan.status == COMPLETE,',
+        '        "status": COMPLETE,\n        "complete": True,',
+    ),
+    (
+        EMIT,
+        "台帳に原本のフルパスを載せる（ホームのパスが記事に乗る）",
+        '                "source_name": safe(p.shot.path.name),',
+        '                "source_name": str(p.shot.path),',
+    ),
+    (
+        EMIT,
+        "台帳で伏せない（原本の名前がそのまま台帳に残る）",
+        "    def safe(text: str) -> str:\n        return redact(text, policy)\n\n    payload = {",
+        "    def safe(text: str) -> str:\n        return text\n\n    payload = {",
+    ),
+    (
+        EMIT,
+        "ポリシーに既定値を置く（伏せ字が黙って無効になる）",
+        "def emit(plan: Layout, docs: Path, policy: Policy) -> Emission:",
+        "def emit(plan: Layout, docs: Path, policy: Policy = None) -> Emission:",
     ),
 ]
 

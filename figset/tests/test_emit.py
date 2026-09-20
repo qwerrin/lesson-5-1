@@ -145,6 +145,24 @@ def test_書いたものを読み戻してハッシュで照合する(tmp_path: 
     assert got.verified == 1
 
 
+def test_原本が後から書き換わっていたら照合が通らない(tmp_path: Path) -> None:
+    """**上のテストだけでは、読み戻しを検査できていない。**
+
+    `verified` をただ数え上げるだけの実装でも、正常な場合は同じ値になる。
+    *集めたあとで原本が書き換わった*場合にだけ差が出る——そしてこれは
+    実際に起きる（撮り直して同じ名前で保存した、など）。
+    """
+    shot = _src(tmp_path / "原本", "a.png", b"AAA")
+    shot.path.write_bytes(b"BBB")  # 集めたあとで中身が変わった
+    figs = (_fig("x", 1, 4, "x"),)
+    plan = layout.plan([shot], figs, {shot.sha256: "x"})
+
+    got = emit.emit(plan, tmp_path / "docs", _policy())
+
+    assert got.verified == 0
+    assert (tmp_path / "docs" / "01-x.png").read_bytes() == b"BBB"
+
+
 def test_中身が同じなら書き換えない(tmp_path: Path) -> None:
     plan, docs = _one(tmp_path)
     emit.emit(plan, docs, _policy())
@@ -171,6 +189,27 @@ def test_はじめて書いたものは作成と記録する(tmp_path: Path) -> 
     got = emit.emit(plan, docs, _policy())
 
     assert got.action_of("01-verify-source.png") == emit.CREATED
+
+
+def test_書き出したものごとに結果を返す(tmp_path: Path) -> None:
+    """**1つの結果で全部を代表させない。** 図版はそのままで対応表だけ変わる、は普通に起きる。"""
+    plan, docs = _one(tmp_path)
+    emit.emit(plan, docs, _policy())
+    (docs / emit.README).write_text("手で書き換えた", encoding="utf-8")
+
+    got = emit.emit(plan, docs, _policy())
+
+    assert got.action_of("01-verify-source.png") == emit.UNCHANGED
+    assert got.action_of(emit.README) == emit.REPLACED
+
+
+def test_書き出していない名前を聞かれたら失敗する(tmp_path: Path) -> None:
+    """**知らないものに既定値を返さない。** 「変更なし」は嘘になる。"""
+    plan, docs = _one(tmp_path)
+    got = emit.emit(plan, docs, _policy())
+
+    with pytest.raises(KeyError):
+        got.action_of("そんなファイルは無い.png")
 
 
 def test_書き出す図版が1枚も無ければ成功にしない(tmp_path: Path) -> None:
@@ -231,13 +270,20 @@ def test_対応表の先頭で完成していないと言う(tmp_path: Path) -> 
 
 
 def test_対応表に欠けを載せる(tmp_path: Path) -> None:
+    """**期待値を、出力側の固定文と衝突させない。**
+
+    最初この図版のキーを `撮り忘れ` にしていたが、節の見出しが
+    「絵が無い図版（**撮り忘れ**）」なので、*一覧を空にしても文字列は見つかった*
+    ——2026-09-20 のミューテーションで素通りして分かった。
+    **テンプレートに無い語で探す。**
+    """
     shot = _src(tmp_path / "原本", "a.png", b"AAA")
-    figs = (_fig("x", 1, 4, "x"), _fig("撮り忘れ", 2, 5, "y"))
+    figs = (_fig("x", 1, 4, "x"), _fig("まだ撮っていない絵", 2, 5, "y"))
     plan = layout.plan([shot], figs, {shot.sha256: "x"})
 
     emit.emit(plan, tmp_path / "docs", _policy())
 
-    assert "撮り忘れ" in _read(tmp_path / "docs", "README.md")
+    assert "まだ撮っていない絵" in _read(tmp_path / "docs", "README.md")
 
 
 def test_対応表に孤児を載せる(tmp_path: Path) -> None:
@@ -260,6 +306,21 @@ def test_対応表に食い違いを載せる(tmp_path: Path) -> None:
     emit.emit(plan, tmp_path / "docs", _policy())
 
     assert "ぶつかり" in _read(tmp_path / "docs", "README.md")
+
+
+def test_空の節も見出しを残す(tmp_path: Path) -> None:
+    """**節ごと消すと、「見ていない」のか「無い」のかが分からない。**
+
+    欠けが0件のとき見出しごと落とすと、*検査したうえで0件だった*ことが
+    伝わらない。`journal` の空の見出しを消さない規則と同じ形。
+    """
+    plan, docs = _one(tmp_path)
+
+    emit.emit(plan, docs, _policy())
+    text = _read(docs, "README.md")
+
+    assert "絵が無い図版" in text
+    assert "（なし）" in text
 
 
 def test_対応表に没を載せる(tmp_path: Path) -> None:
@@ -353,6 +414,48 @@ def test_台帳に状態を載せる(tmp_path: Path) -> None:
     ledger = json.loads(_read(docs, "figset.json"))
 
     assert ledger["status"] == layout.COMPLETE
+    assert ledger["complete"] is True
+
+
+def test_台帳に欠けと孤児と食い違いを載せる(tmp_path: Path) -> None:
+    """**台帳は機械で読む記録。** 対応表だけに書くと、道具からは見えない。
+
+    *読む側（対応表）に出ていることは、書く側（台帳）に入っている証拠にならない*
+    （教訓 `consumers-do-not-prove-producers`）。
+    """
+    a = _src(tmp_path / "原本", "a.png", b"AAA")
+    b = _src(tmp_path / "原本", "b.png", b"BBB", minutes=1)
+    c = _src(tmp_path / "原本", "c.png", b"CCC", minutes=2)
+    figs = (_fig("ぶつかり", 1, 4, "x"), _fig("撮り忘れ", 2, 5, "y"))
+    plan = layout.plan(
+        [a, b, c],
+        figs,
+        {a.sha256: "ぶつかり", b.sha256: "ぶつかり", c.sha256: "定義に無い名"},
+    )
+
+    emit.emit(plan, tmp_path / "docs", _policy())
+    ledger = json.loads(_read(tmp_path / "docs", "figset.json"))
+
+    assert ledger["missing"] == ["撮り忘れ"]
+    assert ledger["orphans"] == ["定義に無い名"]
+    assert ledger["conflicts"] == {"ぶつかり": [a.sha256, b.sha256]}
+
+
+def test_台帳は未完成を隠さない(tmp_path: Path) -> None:
+    """**上のテストだけでは、状態を書き写しているかが分からない。**
+
+    常に `complete` と書く実装でも、完成した場合は同じ値になる。
+    *欠けている場合に差が出る*ので、そちらを見る。
+    """
+    shot = _src(tmp_path / "原本", "a.png", b"AAA")
+    figs = (_fig("x", 1, 4, "x"), _fig("y", 2, 5, "y"))
+    plan = layout.plan([shot], figs, {shot.sha256: "x"})
+
+    emit.emit(plan, tmp_path / "docs", _policy())
+    ledger = json.loads(_read(tmp_path / "docs", "figset.json"))
+
+    assert ledger["status"] == layout.INCOMPLETE
+    assert ledger["complete"] is False
 
 
 # --------------------------------------------------------------------------

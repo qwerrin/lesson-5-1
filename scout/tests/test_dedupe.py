@@ -78,6 +78,14 @@ def test_追跡パラメータを落とす() -> None:
     assert dedupe.normalize(tracked) == dedupe.normalize(plain)
 
 
+def test_追跡パラメータの大小を問わない() -> None:
+    """`UTM_SOURCE` で来ることがある。**大小で取りこぼすと、静かに重複する。**"""
+    plain = "https://qiita.com/a/items/x"
+    shouting = "https://qiita.com/a/items/x?UTM_SOURCE=Twitter"
+
+    assert dedupe.normalize(shouting) == dedupe.normalize(plain)
+
+
 def test_知らないクエリは残す() -> None:
     """**★ M4 の核心。** 意味を持つクエリを落とすと、別の記事が同じものになる。
 
@@ -293,6 +301,17 @@ def test_壊れたURLを黙って捨てない() -> None:
 def test_台帳の壊れたURLで落とさない() -> None:
     """台帳側が壊れていても、**まともな記事を巻き込まない。**"""
     got = dedupe.sift([_article("https://q.com/x")], seen=["", "  ", "://"])
+
+    assert len(got.kept) == 1
+
+
+def test_空のURLを台帳の空と一致させない() -> None:
+    """**空どうしを「同じ記事」にしない。**
+
+    台帳に空行が1つ入っているだけで、*URL を持たない記事が全部消える*。
+    正規化できなかったもの同士は、**同じでも違うでもなく、分からない**。
+    """
+    got = dedupe.sift([_article("")], seen=[""])
 
     assert len(got.kept) == 1
 

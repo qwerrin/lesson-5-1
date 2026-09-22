@@ -49,6 +49,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 
 FETCH = "scout/fetch.py"
+DEDUPE = "scout/dedupe.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -231,6 +232,146 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "いいね数を取らない",
         '                "likes": item.get("likes_count", 0),',
         '                "likes": 0,',
+    ),
+    # ================================================================= dedupe
+    # **ここで狙うのは「効きすぎ」と「効かなすぎ」の両方。**
+    # 効かなければ重複が1行増えるだけだが、**効きすぎるとその記事は二度と来ない**。
+    # ------------------------------------------------------------ 正規化
+    (
+        DEDUPE,
+        "追跡パラメータを落とさない（`?utm_source=` 違いが別物として重複する）",
+        "        if key.lower() not in TRACKING_PARAMS",
+        "        if True",
+    ),
+    (
+        DEDUPE,
+        "クエリを全部落とす（**効きすぎ**。別の記事が同じものになる）",
+        "        if key.lower() not in TRACKING_PARAMS",
+        "        if False",
+    ),
+    (
+        DEDUPE,
+        "追跡パラメータを大小で取りこぼす（`UTM_SOURCE` が残って重複する）",
+        "        if key.lower() not in TRACKING_PARAMS",
+        "        if key not in TRACKING_PARAMS",
+    ),
+    (
+        DEDUPE,
+        "クエリを並べ替えない（並びだけ違うものが別物になる）",
+        'query = "&".join(f"{key}={value}" for key, value in sorted(kept))',
+        'query = "&".join(f"{key}={value}" for key, value in kept)',
+    ),
+    (
+        DEDUPE,
+        "フラグメントを残す（同じページの中の位置が別の記事になる）",
+        '            "",  # フラグメントは同じページの中の位置であって、別の記事ではない',
+        "            parts.fragment,",
+    ),
+    (
+        DEDUPE,
+        "末尾のスラッシュを落とさない",
+        '    if len(path) > 1 and path.endswith("/"):',
+        "    if False:",
+    ),
+    (
+        DEDUPE,
+        "根のスラッシュまで落とす（別物に見えるだけで得が無い）",
+        '    if len(path) > 1 and path.endswith("/"):',
+        '    if path.endswith("/"):',
+    ),
+    (
+        DEDUPE,
+        "パスの大小を揃える（**効きすぎ**。大小が意味を持つ URL が潰れる）",
+        "            path,  # **パスの大小は揃えない**（大小が意味を持つ URL がある）",
+        "            path.lower(),",
+    ),
+    (
+        DEDUPE,
+        "ホストの大小を揃えない",
+        "            parts.netloc.lower(),",
+        "            parts.netloc,",
+    ),
+    (
+        DEDUPE,
+        "www を落とす（**踏み込みすぎ**。落として困る場合が理論上ある）",
+        "            parts.netloc.lower(),",
+        '            parts.netloc.lower().removeprefix("www."),',
+    ),
+    # **スキームの `.lower()` は仕込まない。** `urlsplit` が既に小文字にしているので、
+    # 重ねても観測できるものが1つも変わらない（2026-09-23 に素通りして分かり、実装から消した）。
+    (
+        DEDUPE,
+        "正規化できないものを鍵にする（台帳の空行で、URL 無しの記事が全部消える）",
+        "        if key:\n            keys.add(key)",
+        "        if True:\n            keys.add(key)",
+    ),
+    # ------------------------------------------------------------ 突き合わせ
+    (
+        DEDUPE,
+        "台帳を見ない（毎日同じ記事が積み上がる）",
+        "    if key in before:",
+        "    if False:",
+    ),
+    (
+        DEDUPE,
+        "vault を見ない（既に持っている記事をまた持ってくる）",
+        "    if key in in_vault:",
+        "    if False:",
+    ),
+    (
+        DEDUPE,
+        "同じ取り込みの中の重複を見ない",
+        "    if key in batch:",
+        "    if False:",
+    ),
+    (
+        DEDUPE,
+        "理由の順番を入れ替える（直しやすいほうを先に出さない）",
+        "    if key in before:\n        return SEEN_BEFORE\n    if key in in_vault:\n        return IN_VAULT",
+        "    if key in in_vault:\n        return IN_VAULT\n    if key in before:\n        return SEEN_BEFORE",
+    ),
+    (
+        DEDUPE,
+        "残したものを取り込みに覚えさせない（同じ回の重複が素通りする）",
+        "            batch.add(key)",
+        "            pass",
+    ),
+    (
+        DEDUPE,
+        "捨てたものを返さない（**H8：何を捨てたか残らない**）",
+        "            dropped.append(Dropped(article=article, key=key, reason=reason))",
+        "            pass",
+    ),
+    (
+        DEDUPE,
+        "渡された順を逆にする",
+        "    for article in articles:\n        key = normalize(article.url)",
+        "    for article in reversed(articles):\n        key = normalize(article.url)",
+    ),
+    # ---------------------------------------------------------------- 件数
+    (
+        DEDUPE,
+        "見た件数を残した件数と同じにする（何件落としたか分からない）",
+        "        return len(self.kept) + len(self.dropped)",
+        "        return len(self.kept)",
+    ),
+    (
+        DEDUPE,
+        "理由の内訳を出さない",
+        "        return dict(Counter(d.reason for d in self.dropped))",
+        "        return {}",
+    ),
+    (
+        DEDUPE,
+        "件数を出さずに「重複を除きました」とだけ言う",
+        '            f"{self.total} 件中 {len(self.kept)} 件を残した"',
+        '            "重複を除きました"',
+    ),
+    (
+        DEDUPE,
+        "内訳を空にする（落とした理由が伝わらない）",
+        'breakdown = "・".join(f"{r} {n}" for r, n in sorted(self.reasons.items()))',
+        'breakdown = ""',
     ),
 ]
 

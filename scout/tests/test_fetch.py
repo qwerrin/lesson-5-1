@@ -142,6 +142,35 @@ def test_Qiitaは本文を持つ() -> None:
     assert got.articles[0].has_body is True
 
 
+def test_本文が空文字なら本文なし扱い() -> None:
+    """**空を本文として通さない。** `None` と空文字を分けても、後段には同じ害になる。
+
+    `split` は「本文がある側」を要約へ送る。空文字を通すと、
+    *中身の無い本文で要約を作り、ソース側の照合が0件で「一致」になる*。
+    """
+    empty = {**QIITA_ITEM, "body": ""}
+    got = fetch.harvest((_qiita(),), _get({"qiita.com": _reply(json.dumps([empty]))}))
+
+    assert got.articles[0].has_body is False
+
+
+def test_配列でない応答を0件にしない() -> None:
+    """Qiita はエラーを `{"message": ..., "type": ...}` で返す。
+
+    **形が違うものを、黙って0件として通さない。**
+
+    **`status` だけ見ると弱い。** 形を見ずに回しても、辞書のキーを記事として
+    読もうとして `TypeError` で落ち、結局 `FAILED` にはなる
+    ——*同じ結論に、読めない理由で辿り着く*。
+    だから **`detail` が何が起きたかを言っていること**まで見る。
+    """
+    payload = json.dumps({"message": "Not found", "type": "not_found"})
+    got = fetch.harvest((_qiita(),), _get({"qiita.com": _reply(payload)}))
+
+    assert got.results[0].status == fetch.FAILED
+    assert "配列" in got.results[0].detail
+
+
 def test_Qiitaの日時をローカルの素の日時に揃える() -> None:
     """**物差しを1本にする**（教訓 `one-date-basis-per-output`）。"""
     got = fetch.harvest((_qiita(),), _both())

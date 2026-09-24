@@ -150,6 +150,21 @@ def test_取得元を先に見る() -> None:
     assert [h.reason for h in got.headline] == [split.NOT_SUMMARIZABLE]
 
 
+def test_点の無い記事は本文があっても要約へ回さない() -> None:
+    """**`rank` の上限を素通りさせない。**
+
+    Qiita でもタグが0個なら点は付かない（実測では全件1個以上だが、API の形としては起こる）。
+    ここで通すと、*上限10件の外から要約が増える*。理由は「取得元がだめ」ではないので、
+    **別の名前で残す**——理由が嘘だと、直し方を間違える。
+    """
+    got = split.split(
+        _ranking(unranked=(_kept("https://q.com/untagged"),)), summarizable=ALLOWED
+    )
+
+    assert got.summarize == ()
+    assert [h.reason for h in got.headline] == [split.UNRANKED]
+
+
 def test_要約してよい取得元が空なら受け付けない() -> None:
     """**空で回すと、1件も要約せずに「異常なし」と答える**（`fetch` の取得元0件と同じ形）。"""
     with pytest.raises(ValueError):

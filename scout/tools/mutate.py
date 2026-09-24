@@ -51,6 +51,7 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 FETCH = "scout/fetch.py"
 DEDUPE = "scout/dedupe.py"
 RANK = "scout/rank.py"
+SPLIT = "scout/split.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -554,6 +555,137 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "点を付けなかった件数を出さない",
         '            f"／点を付けなかった {len(self.unranked)} 件"',
         '            ""',
+    ),
+    # ================================================================ split
+    # ---------------------------------------------------------------- 入口
+    (
+        SPLIT,
+        "要約してよい取得元が空でも回す（1件も要約せずに異常なしと答える）",
+        "    if not summarizable:",
+        "    if False:",
+    ),
+    (
+        SPLIT,
+        "しきい値0でも回す（空白1字でも本文になる）",
+        "    if min_body < 1:",
+        "    if False:",
+    ),
+    (
+        SPLIT,
+        "しきい値の境界をずらして0を通す",
+        "    if min_body < 1:",
+        "    if min_body < 0:",
+    ),
+    # ---------------------------------------------------------------- 経路
+    (
+        SPLIT,
+        "**取得元を見ない**（本文の有無だけで要約の段が開く）",
+        "    if article.source not in summarizable:\n        return NOT_SUMMARIZABLE",
+        "    if False:\n        return NOT_SUMMARIZABLE",
+    ),
+    (
+        SPLIT,
+        "本文の有無を取得元より先に見る",
+        "    if article.source not in summarizable:\n        return NOT_SUMMARIZABLE\n    if not article.has_body:\n        return NO_BODY",
+        "    if not article.has_body:\n        return NO_BODY\n    if article.source not in summarizable:\n        return NOT_SUMMARIZABLE",
+    ),
+    (
+        SPLIT,
+        "本文が無いことを「短い」に混ぜる",
+        "    if not article.has_body:",
+        "    if False:",
+    ),
+    (
+        SPLIT,
+        "前後の空白も長さに数える",
+        '    if len((article.body or "").strip()) < min_body:',
+        '    if len(article.body or "") < min_body:',
+    ),
+    (
+        SPLIT,
+        "しきい値ちょうどを短いとみなす",
+        '    if len((article.body or "").strip()) < min_body:',
+        '    if len((article.body or "").strip()) <= min_body:',
+    ),
+    (
+        SPLIT,
+        "既定のしきい値を実測より低くする",
+        "MIN_BODY = 500",
+        "MIN_BODY = 200",
+    ),
+    (
+        SPLIT,
+        "既定のしきい値を使わない",
+        "    min_body: int = MIN_BODY,",
+        "    min_body: int = 1,",
+    ),
+    (
+        SPLIT,
+        "**点の無い記事の理由を取得元のせいにする**（直し方を間違える）",
+        "            reason = UNRANKED",
+        "            reason = NOT_SUMMARIZABLE",
+    ),
+    # ---------------------------------------------------------------- 運ぶもの
+    (
+        SPLIT,
+        "点を付けなかった記事を運ばない（Zenn が消える）",
+        "    for kept in ranking.unranked:",
+        "    for kept in ():",
+    ),
+    (
+        SPLIT,
+        "**捨てたものを生き返らせる**",
+        "    for kept in ranking.unranked:",
+        "    for kept in (*ranking.unranked, *(r.kept for r in ranking.dropped)):",
+    ),
+    (
+        SPLIT,
+        "選んだ順を逆にする",
+        "    for scored in ranking.picked:",
+        "    for scored in reversed(ranking.picked):",
+    ),
+    (
+        SPLIT,
+        "点を付けなかった記事を見出しの先頭へ差し込む",
+        "        headline.append(Headline(kept=kept, reason=reason, score=None))",
+        "        headline.insert(0, Headline(kept=kept, reason=reason, score=None))",
+    ),
+    (
+        SPLIT,
+        "見出しにした記事の点を捨てる",
+        "            headline.append(Headline(kept=scored.kept, reason=reason, score=scored.score))",
+        "            headline.append(Headline(kept=scored.kept, reason=reason, score=None))",
+    ),
+    # ---------------------------------------------------------------- 件数
+    (
+        SPLIT,
+        "総数から見出しのぶんを抜く",
+        "        return len(self.summarize) + len(self.headline)",
+        "        return len(self.summarize)",
+    ),
+    (
+        SPLIT,
+        "理由の内訳を出さない",
+        "        return dict(Counter(h.reason for h in self.headline))",
+        "        return {}",
+    ),
+    (
+        SPLIT,
+        "件数を出さずに「要約しました」とだけ言う",
+        '            f"{self.total} 件中 {len(self.summarize)} 件を要約へ"',
+        '            "要約しました"',
+    ),
+    (
+        SPLIT,
+        "見出しだけの件数を出さない",
+        "            f\"／見出しだけ {len(self.headline)} 件（{breakdown or 'なし'}）\"",
+        "            f\"（{breakdown or 'なし'}）\"",
+    ),
+    (
+        SPLIT,
+        "内訳を空にする",
+        'breakdown = "・".join(f"{r} {n}" for r, n in sorted(self.reasons.items()))',
+        'breakdown = ""',
     ),
 ]
 

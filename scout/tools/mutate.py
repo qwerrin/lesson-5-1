@@ -50,6 +50,7 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 
 FETCH = "scout/fetch.py"
 DEDUPE = "scout/dedupe.py"
+RANK = "scout/rank.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -372,6 +373,187 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "内訳を空にする（落とした理由が伝わらない）",
         'breakdown = "・".join(f"{r} {n}" for r, n in sorted(self.reasons.items()))',
         'breakdown = ""',
+    ),
+    # ================================================================ rank
+    # ---------------------------------------------------------------- 上限
+    (
+        RANK,
+        "上限0でも回す（全部を捨てて「上限どおり」と答える）",
+        "    if profile.cap < 1:",
+        "    if False:",
+    ),
+    (
+        RANK,
+        "上限の境界をずらして0を通す",
+        "    if profile.cap < 1:",
+        "    if profile.cap < 0:",
+    ),
+    (
+        RANK,
+        "上限より1件多く選ぶ",
+        "        picked=tuple(scored[: profile.cap]),",
+        "        picked=tuple(scored[: profile.cap + 1]),",
+    ),
+    (
+        RANK,
+        "上限で落としたものを返さない（**H8：何を捨てたか残らない**）",
+        "        dropped=tuple(dropped + over),",
+        "        dropped=tuple(dropped),",
+    ),
+    (
+        RANK,
+        "上限で落としたものの点と内訳を捨てる（上限が妥当か検証できない）",
+        'reason=OVER_CAP, detail="", score=s.score, hits=s.hits)',
+        'reason=OVER_CAP, detail="", score=None, hits=())',
+    ),
+    # ---------------------------------------------------------------- 点
+    (
+        RANK,
+        "**いいね数を点に混ぜる**（生まれたての記事が沈む）",
+        "        scored.append(Scored(kept=item, score=len(hits), hits=hits))",
+        '        scored.append(Scored(kept=item, score=len(hits) + item.article.metrics.get("likes", 0), hits=hits))',
+    ),
+    (
+        RANK,
+        "タグを部分一致で見る（`python3` が `python` に化ける）",
+        "if tag.casefold() in tags]",
+        "if any(t in tag.casefold() for t in tags)]",
+    ),
+    (
+        RANK,
+        "興味のタグの大小を見る",
+        'found = [f"tag:{tag}" for tag in item.article.tags if tag.casefold() in tags]',
+        'found = [f"tag:{tag}" for tag in item.article.tags if tag in tags]',
+    ),
+    (
+        RANK,
+        "内訳のタグを小文字に書き換える（記録が実物と合わない）",
+        'found = [f"tag:{tag}" for tag in item.article.tags if tag.casefold() in tags]',
+        'found = [f"tag:{tag.casefold()}" for tag in item.article.tags if tag.casefold() in tags]',
+    ),
+    (
+        RANK,
+        "興味の語の大小を見る",
+        "for word, folded in words if folded in title]",
+        "for word, folded in words if word in title]",
+    ),
+    (
+        RANK,
+        "タイトルの語で点を付けない",
+        '    found += [f"keyword:{word}" for word, folded in words if folded in title]',
+        "    pass",
+    ),
+    (
+        RANK,
+        "設定の前後の空白を落とさない",
+        "    return {v.strip().casefold() for v in values}",
+        "    return {v.casefold() for v in values}",
+    ),
+    # ---------------------------------------------------------------- 並び
+    (
+        RANK,
+        "並べ替えない（取得元が返した順を意味に使う・U8）",
+        "    scored.sort(key=_order)",
+        "    pass",
+    ),
+    (
+        RANK,
+        "**いいね数を点より先に見る**",
+        "    return (-s.score, -popularity,",
+        "    return (-popularity, -s.score,",
+    ),
+    (
+        RANK,
+        "同点の並べ替えでストックを見ない",
+        '    popularity = metrics.get("likes", 0) + metrics.get("stocks", 0)',
+        '    popularity = metrics.get("likes", 0)',
+    ),
+    (
+        RANK,
+        "同点を古い順に並べる",
+        "-s.kept.article.published_at.timestamp(), s.kept.key)",
+        "s.kept.article.published_at.timestamp(), s.kept.key)",
+    ),
+    (
+        RANK,
+        "最後の決め手を渡された順にする（全部同点だと取得元の順になる）",
+        "-s.kept.article.published_at.timestamp(), s.kept.key)",
+        '-s.kept.article.published_at.timestamp(), "")',
+    ),
+    # ---------------------------------------------------------------- 物差しが無いもの
+    (
+        RANK,
+        "**タグの無い記事を0点として並べる**（上限を超えた日に黙って全部落ちる）",
+        "        if not item.article.tags:",
+        "        if False:",
+    ),
+    (
+        RANK,
+        "点を付けない記事を並べ替える（フィードの新着順を壊す）",
+        "        unranked=tuple(unranked),",
+        "        unranked=tuple(sorted(unranked, key=lambda k: k.key)),",
+    ),
+    # ---------------------------------------------------------------- ミュート
+    (
+        RANK,
+        "ミュートしたものを返さない（**H8**）",
+        "            dropped.append(Rejected(kept=item, reason=MUTED, detail=muted, score=None, hits=()))",
+        "            pass",
+    ),
+    (
+        RANK,
+        "点を付けない記事にミュートを効かせない",
+        "        if muted is not None:",
+        "        if muted is not None and item.article.tags:",
+    ),
+    (
+        RANK,
+        "ミュートのタグの大小を見る",
+        "        if tag.casefold() in mute_tags:",
+        "        if tag in mute_tags:",
+    ),
+    (
+        RANK,
+        "ミュートの語を見るときタイトルの大小を揃えない",
+        "    title = item.article.title.casefold()\n    for word, folded in mute_words:",
+        "    title = item.article.title\n    for word, folded in mute_words:",
+    ),
+    (
+        RANK,
+        "ミュートの理由の中身を捨てる（どのタグで落ちたか分からない）",
+        '            return f"tag:{tag}"',
+        '            return "muted"',
+    ),
+    (
+        RANK,
+        "**空の語を捨てない**（その日の記事が全部消える）",
+        "    return [(v.strip(), v.strip().casefold()) for v in values if v.strip()]",
+        "    return [(v.strip(), v.strip().casefold()) for v in values]",
+    ),
+    # ---------------------------------------------------------------- 件数
+    (
+        RANK,
+        "総数から点を付けなかったぶんを抜く（どこかで黙って消える）",
+        "        return len(self.picked) + len(self.unranked) + len(self.dropped)",
+        "        return len(self.picked) + len(self.dropped)",
+    ),
+    (
+        RANK,
+        "理由の内訳を出さない",
+        "        return dict(Counter(d.reason for d in self.dropped))\n\n    @property\n    def summary(self) -> str:\n        \"\"\"**件数を必ず出す。** 点を付けなかった",
+        "        return {}\n\n    @property\n    def summary(self) -> str:\n        \"\"\"**件数を必ず出す。** 点を付けなかった",
+    ),
+    (
+        RANK,
+        "件数を出さずに「選びました」とだけ言う",
+        '            f"{self.total} 件中 {len(self.picked)} 件を選んだ"',
+        '            "選びました"',
+    ),
+    (
+        RANK,
+        "点を付けなかった件数を出さない",
+        '            f"／点を付けなかった {len(self.unranked)} 件"',
+        '            ""',
     ),
 ]
 

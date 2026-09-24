@@ -129,6 +129,13 @@ def test_タグの大小を問わない() -> None:
     assert got.picked[0].score == 1
 
 
+def test_内訳には取得元が返したとおりのタグを残す() -> None:
+    """**照合は大小を揃えるが、記録は揃えない。** 記録が実物と違うと、見返すときの物差しにならない。"""
+    got = rank.rank([_qiita("https://q.com/x", tags=("PYTHON",))], _profile())
+
+    assert got.picked[0].hits == ("tag:PYTHON",)
+
+
 def test_タグは完全一致で見る() -> None:
     """`python` に興味があっても `python3` は別のタグ。**部分一致で広げない。**"""
     got = rank.rank([_qiita("https://q.com/x", tags=("python3",))], _profile())
@@ -313,6 +320,26 @@ def test_ミュートのタグで落とす() -> None:
     assert got.picked == ()
     assert [d.reason for d in got.dropped] == [rank.MUTED]
     assert got.dropped[0].detail == "tag:ポエム"
+
+
+def test_ミュートのタグも大小を問わない() -> None:
+    """**興味のタグと同じ扱いにする。** 片方だけ大小を見ると、*見たくないものが大小違いで素通りする*。"""
+    got = rank.rank(
+        [_qiita("https://q.com/x", tags=("Poem",))],
+        _profile(mute_tags=frozenset({"poem"})),
+    )
+
+    assert [d.reason for d in got.dropped] == [rank.MUTED]
+
+
+def test_設定の前後の空白を無視する() -> None:
+    """設定ファイルは手で書く。**`" python"` で取りこぼすと、興味のタグが黙って効かない。**"""
+    got = rank.rank(
+        [_qiita("https://q.com/x", tags=("python",), title="Claude")],
+        _profile(tags=frozenset({" python "}), keywords=(" Claude ",)),
+    )
+
+    assert got.picked[0].score == 2
 
 
 def test_ミュートの語でタイトルから落とす() -> None:

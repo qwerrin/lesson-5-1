@@ -122,6 +122,11 @@ def test_英字の単位も一緒に抜く() -> None:
     assert verify_source.claims("100 MB に収まる") == ("100MB",)
 
 
+def test_英字の単位の後ろに英字が続けば単位にしない() -> None:
+    """`5msec` の `ms` は単位ではない。**語の途中を単位として切り取らない。**"""
+    assert verify_source.claims("5msec で返る") == ("5", "msec")
+
+
 def test_単位でない字は付けない() -> None:
     """`3つの命令` の `つ` は単位として扱わない。**知らない字を単位にすると、照合が厳しすぎて外れる。**"""
     assert verify_source.claims("3つの命令") == ("3",)
@@ -158,6 +163,85 @@ def test_単位つきでも数の一部には当てない() -> None:
 def test_英字の単位の後ろに英字が続けば別の単位() -> None:
     """`5ms` は `5msec` の一部ではない……のではなく、**`5m` を `5ms` で裏付けない。**"""
     assert not verify_source.present("5m", "5ms で返る")
+
+
+# --------------------------------------------------------------------------
+# レビューで出た「本文が裏付けていないのに照合済み」（2026-10-02）
+# --------------------------------------------------------------------------
+#
+# **照合済みの誤りがいちばん重い。** 「本文に無い」の誤りは読む人が開いて確かめるが、
+# 「照合済み」と出たものは誰も開かない。
+
+
+def test_数と単位の間で行をまたがない() -> None:
+    """見出しや箇条書きの番号が行末に来て、次の行の頭の字と組んでしまう。"""
+    assert not verify_source.present("5秒", "Step 5\n\n秒速で動く")
+    assert not verify_source.present("2日", "バージョン 2\n日本語版")
+
+
+def test_上付き文字を数にしない() -> None:
+    """NFKC は `10²` を `102` にする。**本文に無い数が生まれる。**"""
+    assert not verify_source.present("102", "計算量は 10² で済む")
+
+
+def test_分数を数にしない() -> None:
+    """NFKC は `1½` を `11⁄2` にする。**`2倍` が分母の `2` で裏付けられる。**"""
+    assert not verify_source.present("2倍", "1½倍に伸びた")
+
+
+def test_要約の上付き文字も数にしない() -> None:
+    assert verify_source.claims("10² 回") == ("10",)
+
+
+def test_短い語は大小を区別する() -> None:
+    """`Go` を英文の `go` で裏付けない。**3字以下の語は、大小が違えば別の語として扱う。**"""
+    assert not verify_source.present("Go", "Let's go to the store")
+    assert not verify_source.present("AI", "Thai food")  # 境界で弾かれるが、大小でも弾く
+    assert not verify_source.present("IF", "if (x) {}")
+
+
+def test_3字の語も大小を区別する() -> None:
+    assert not verify_source.present("API", "api の話")
+
+
+def test_長い語は大小を問わない() -> None:
+    assert verify_source.present("Python", "python で書いた")
+    assert verify_source.present("Rust", "rust で書いた")
+
+
+def test_下付き文字も数にしない() -> None:
+    """`CO₂` を `CO2` にしない。**語に本文に無い数字が混ざる。**"""
+    assert verify_source.claims("CO₂ を 30% 削減") == ("CO", "30%")
+
+
+def test_3桁ずつでない区切りをつなげない() -> None:
+    assert not verify_source.present("12345", "値は 1,2345")
+    assert not verify_source.present("1234567", "値は 1234,567")
+
+
+def test_空の主張は本文にあることにしない() -> None:
+    """**空文字はどこにでもある。** `claims()` は空を出さないが、公開した関数として閉じる。"""
+    assert not verify_source.present("", "本文")
+
+
+def test_桁区切りでないカンマは落とさない() -> None:
+    """`1,2,3` は**3つの数**。カンマを全部落とすと `123` になる。"""
+    assert not verify_source.present("123", "手順は 1,2,3 の順")
+    assert not verify_source.present("123", "値は 1,23 だった")
+
+
+def test_桁区切りでないカンマで数をつなげて抜かない() -> None:
+    assert verify_source.claims("手順 1,2,3") == ("1", "2", "3")
+
+
+def test_桁区切りのカンマは何組でも落とす() -> None:
+    assert verify_source.claims("12,345,678件") == ("12345678件",)
+    assert verify_source.present("12345678", "12,345,678 件")
+
+
+def test_英数字以外の数字で落ちない() -> None:
+    """`str.isdigit()` はアラビア数字の `٣` も数字と答える。**照合で例外を出さない。**"""
+    assert not verify_source.present("٣", "本文")
 
 
 # --------------------------------------------------------------------------

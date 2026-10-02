@@ -85,7 +85,7 @@ def _one(text: str, body: str | None, **kwargs: object) -> verify_source.Check:
 def test_数字と英語の語を抜く() -> None:
     got = verify_source.claims("Jev は LLM より 200 倍速く、400倍安い。")
 
-    assert got == ("Jev", "LLM", "200", "400")
+    assert got == ("Jev", "LLM", "200倍", "400倍")
 
 
 def test_同じ主張は1つにまとめる() -> None:
@@ -93,12 +93,95 @@ def test_同じ主張は1つにまとめる() -> None:
 
 
 def test_小数とカンマ区切りを1つの数として抜く() -> None:
-    assert verify_source.claims("2.5倍で1,000件") == ("2.5", "1000")
+    assert verify_source.claims("2.5倍で1,000件") == ("2.5倍", "1000件")
 
 
 def test_全角の数字と英字を半角にしてから抜く() -> None:
     """要約器は全角で書くことがある。**表記が違うだけで「本文に無い」にしない。**"""
-    assert verify_source.claims("ＬＬＭを２００回") == ("LLM", "200")
+    assert verify_source.claims("ＬＬＭを２００回") == ("LLM", "200回")
+
+
+# --------------------------------------------------------------------------
+# 数は単位ごと抜く（2026-10-02 に実データで漏れた・A）
+# --------------------------------------------------------------------------
+#
+# 境界つきにしても、`2倍速い` は本文の `System 1/2` の `2` で裏付けられてしまった。
+# **数だけでは、何の数かが分からない。** 単位が付いているなら、単位ごと照合する。
+
+
+def test_数のすぐ後ろの単位を一緒に抜く() -> None:
+    assert verify_source.claims("200倍速い") == ("200倍",)
+
+
+def test_数と単位の間の空白を詰めて抜く() -> None:
+    """要約器は `200 倍` と空白を入れて書く（2026-09-25 の実物）。"""
+    assert verify_source.claims("200 倍速い") == ("200倍",)
+
+
+def test_英字の単位も一緒に抜く() -> None:
+    assert verify_source.claims("100 MB に収まる") == ("100MB",)
+
+
+def test_単位でない字は付けない() -> None:
+    """`3つの命令` の `つ` は単位として扱わない。**知らない字を単位にすると、照合が厳しすぎて外れる。**"""
+    assert verify_source.claims("3つの命令") == ("3",)
+
+
+def test_単位つきの数は単位ごと照合する() -> None:
+    """**★ 2026-10-02 に実データで漏れた形そのもの。**
+
+    本文に `2倍` は無いが、`System 1/2` に裸の `2` がある。*数だけで照合すると裏付けに化ける。*
+    """
+    body = "System 1/2 を使い分ける。LLMより200倍速い"
+
+    assert not verify_source.present("2倍", body)
+
+
+def test_単位つきの数を本文から見つける() -> None:
+    assert verify_source.present("200倍", "LLMより200倍速い")
+
+
+def test_本文の数と単位の間に空白があっても見つける() -> None:
+    assert verify_source.present("200倍", "LLMより 200 倍速い")
+    assert verify_source.present("100MB", "100 MB に収まる")
+
+
+def test_単位が違えば別の主張() -> None:
+    assert not verify_source.present("200件", "200倍速い")
+
+
+def test_単位つきでも数の一部には当てない() -> None:
+    assert not verify_source.present("2倍", "LLMより200倍速い")
+    assert not verify_source.present("50件", "150件を処理した")
+
+
+def test_英字の単位の後ろに英字が続けば別の単位() -> None:
+    """`5ms` は `5msec` の一部ではない……のではなく、**`5m` を `5ms` で裏付けない。**"""
+    assert not verify_source.present("5m", "5ms で返る")
+
+
+# --------------------------------------------------------------------------
+# 1桁の裸の数は弱い（B）
+# --------------------------------------------------------------------------
+#
+# 単位の無い1桁の数は、本文の見出し番号・箇条書き・`System 1` に必ずある。
+# **見つかっても何も証明しないので、照合に使わない。** ただし数は出す（隠さない）。
+
+
+def test_単位の無い1桁の数は弱い() -> None:
+    assert verify_source.weak("3")
+    assert verify_source.weak("２")
+
+
+def test_単位つき・2桁以上・小数は弱くない() -> None:
+    assert not verify_source.weak("2倍")
+    assert not verify_source.weak("12")
+    assert not verify_source.weak("2.5")
+
+
+def test_語は弱くない() -> None:
+    """`IF` のような短い語も弱いが、**語は境界つきで比べるので数ほどには当たらない。** 今回は数だけ。"""
+    assert not verify_source.weak("IF")
 
 
 def test_語に付く記号を抜く() -> None:
@@ -247,7 +330,7 @@ def test_主張が全部本文にあれば照合済み() -> None:
 
     assert got.verdict == verify_source.CONFIRMED
     assert got.missing == ()
-    assert got.found == ("LLM", "200")
+    assert got.found == ("LLM", "200倍")
 
 
 def test_本文に無い主張があれば印を付ける() -> None:
@@ -255,7 +338,33 @@ def test_本文に無い主張があれば印を付ける() -> None:
     got = _one("Rust で書かれ、2 倍速い。", "Go で書かれ、200倍速い")
 
     assert got.verdict == verify_source.MISMATCH
-    assert got.missing == ("Rust", "2")
+    assert got.missing == ("Rust", "2倍")
+
+
+def test_実データで漏れた罠を捕まえる() -> None:
+    """**★ 2026-10-02：中央値の記事に「2倍速い」を仕込んだら、照合済みになった。**"""
+    got = _one(
+        "Jev は LLM より 2 倍速い。",
+        "System 1/2 を使い分ける。Jev は LLMより**200倍速く**",
+    )
+
+    assert got.verdict == verify_source.MISMATCH
+    assert got.missing == ("2倍",)
+
+
+def test_弱い数は見つかっても見つからなくても数えない() -> None:
+    got = _one("COBOL は 3 つの命令で読める。", "COBOL の話")
+
+    assert got.verdict == verify_source.CONFIRMED
+    assert (got.found, got.missing, got.weak) == (("COBOL",), (), ("3",))
+
+
+def test_弱い数しか無ければ確認できない() -> None:
+    """**弱い主張だけで「照合済み」と言わない**（M9 と同じ形）。"""
+    got = _one("手順は 3 つ。", "手順 1 2 3")
+
+    assert got.verdict == verify_source.UNVERIFIABLE
+    assert got.weak == ("3",)
 
 
 def test_1つでも無ければ照合済みにしない() -> None:
@@ -357,6 +466,13 @@ def test_件数と主張の個数を出す() -> None:
 
     assert "2 件中 1 件を照合できた" in got.summary
     assert "主張 3 個中 2 個が本文に実在" in got.summary
+
+
+def test_弱くて使わなかった数を出す() -> None:
+    """**使わなかったことを隠さない。** 見えないと、照合が全部を見たように読める。"""
+    got = verify_source.verify([_summary("COBOL と 3 つ", "COBOL")])
+
+    assert "弱くて照合に使わなかった数 1 個" in got.summary
 
 
 def test_見ていないものを出力に書く() -> None:

@@ -43,6 +43,8 @@ class Check:
     missing: tuple[str, ...]
     #: 判定には使わない（U13）。要約器が本文に無い引用を作ったことを見せるだけ。
     quotes_missing: tuple[str, ...]
+    #: **見つかっても何も証明しない主張**（単位の無い1桁の数）。数えないが、隠さない。
+    weak: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,11 @@ def claims(text: str) -> tuple[str, ...]:
         if claim not in found:
             found.append(claim)
     return tuple(found)
+
+
+def weak(claim: str) -> bool:
+    """**見つかっても何も証明しない主張か。** 単位の無い1桁の数。"""
+    raise NotImplementedError
 
 
 def present(claim: str, body: str) -> bool:

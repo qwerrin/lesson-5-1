@@ -110,6 +110,11 @@ def test_文末の句点を語に含めない() -> None:
     assert verify_source.claims("使うのは Python.") == ("Python",)
 
 
+def test_語の後ろのハイフンを含めない() -> None:
+    """`API-とは` の `-` は語ではない。含めると、本文の `API` と別物になる。"""
+    assert verify_source.claims("API-とは") == ("API",)
+
+
 def test_日本語だけの要約からは何も抜かない() -> None:
     """**日本語の言い回しは照合しない**（承知で残す）。抜けるものが無いだけで、異常ではない。"""
     assert verify_source.claims("仕組みを分かりやすく説明している。") == ()
@@ -129,6 +134,11 @@ def test_数字の一部には当てない() -> None:
     assert not verify_source.present("2", "LLMより200倍速い")
 
 
+def test_前に数字が続く数にも当てない() -> None:
+    """後ろだけでなく前も見る。`50件` を本文の `150件` で裏付けない。"""
+    assert not verify_source.present("50", "150件を処理した")
+
+
 def test_小数の一部には当てない() -> None:
     assert not verify_source.present("2", "2.5倍速い")
     assert not verify_source.present("5", "2.5倍速い")
@@ -146,6 +156,32 @@ def test_カンマ区切りと区切りなしを同じ数として見る() -> No
 def test_語の一部には当てない() -> None:
     """`Java` は `JavaScript` ではない。**語の前後に英数字があれば別の語。**"""
     assert not verify_source.present("Java", "JavaScript で書いた")
+
+
+def test_語の後ろに続きがあれば別の語() -> None:
+    """`Node` は `Node.js` ではない。**記号の後ろに英数字が続けば、まだ同じ語の中。**"""
+    assert not verify_source.present("Node", "Node.js を使う")
+
+
+def test_語の前に英字があれば別の語() -> None:
+    assert not verify_source.present("Script", "JavaScript で書いた")
+
+
+def test_語の後ろの句点は境界にする() -> None:
+    assert verify_source.present("Python", "使うのは Python.")
+
+
+def test_全角で書かれた本文でも見つける() -> None:
+    assert verify_source.present("LLM", "ＬＬＭの話")
+    assert verify_source.present("200", "２００倍")
+
+
+def test_全角で書かれた主張でも見つける() -> None:
+    assert verify_source.present("２００", "200倍")
+
+
+def test_カンマ区切りの主張でも見つける() -> None:
+    assert verify_source.present("1,000", "1000件")
 
 
 def test_日本語に挟まれた語は見つける() -> None:
@@ -172,6 +208,13 @@ def test_強調を落として比べる() -> None:
     assert verify_source.present("200", "LLMより**200倍速く**")
 
 
+def test_下線の強調も落として比べる() -> None:
+    """**語で確かめる。** 数の境界は数字しか見ないので、`__200__` は落とさなくても当たる
+    ——2026-10-02 のミューテーションで素通りした。語は `_` を語の一部とみなすので、効く。
+    """
+    assert verify_source.present("Python", "__Python__ で書いた")
+
+
 def test_リンクは文字だけにして比べる() -> None:
     """**U12：`[個人ブログ](https://…)` を「個人ブログ」として読む。**"""
     assert verify_source.present("Qiita", "[Qiita](https://qiita.com) に書いた")
@@ -180,6 +223,14 @@ def test_リンクは文字だけにして比べる() -> None:
 def test_リンクのURLの中身を根拠にしない() -> None:
     """**URL の中にある語は、本文が主張していることではない。**"""
     assert not verify_source.present("example", "[記事](https://example.com/a) を読んだ")
+
+
+def test_むき出しのURLの中身も根拠にしない() -> None:
+    """リンクの形になっていない URL も同じ。**URL のホスト名は、本文の主張ではない。**"""
+    # `example.com` で書くと「後ろに `.` ＋英字が続けば別の語」の規則で先に弾かれ、
+    # **URL を落とす規則を1度も通らない**（2026-10-02 のミューテーションで素通りした）。
+    # だから `.` の続かないパスの語で確かめる。
+    assert not verify_source.present("items", "参考: https://qiita.com/ak33/items/x を読んだ")
 
 
 def test_コードの印を落として比べる() -> None:
@@ -245,6 +296,25 @@ def test_本文に無い引用を記録する() -> None:
 
     assert got.verdict == verify_source.CONFIRMED
     assert got.quotes_missing == ("本文に無い一節",)
+
+
+def test_リンクを含む引用を本文に無いことにしない() -> None:
+    """**U12 で実測した形そのもの。** 原文 `私の[個人ブログ](https://…)に` を、
+    要約器は `私の個人ブログに` と書いた。
+    """
+    got = _one(
+        "LLM の話。",
+        "LLM の話。私の[個人ブログ](https://www.example.jp/diary/)に書き溜めた",
+        quotes=("私の個人ブログに書き溜めた",),
+    )
+
+    assert got.quotes_missing == ()
+
+
+def test_全角で書かれた引用を本文に無いことにしない() -> None:
+    got = _one("LLM の話。", "LLM は速い。", quotes=("ＬＬＭ は速い。",))
+
+    assert got.quotes_missing == ()
 
 
 # --------------------------------------------------------------------------

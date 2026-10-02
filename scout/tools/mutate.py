@@ -53,6 +53,7 @@ DEDUPE = "scout/dedupe.py"
 RANK = "scout/rank.py"
 SPLIT = "scout/split.py"
 SUMMARIZE = "scout/summarize.py"
+VERIFY = "scout/verify_source.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -898,6 +899,229 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "内訳を空にする",
         'breakdown = "・".join(f"{r} {n}" for r, n in sorted(self.reasons.items()))',
         'breakdown = ""',
+    ),
+    # ================================================================ verify_source
+    # **正規表現は raw 文字列で書く。** 逆スラッシュが崩れると「置換先なし」で止まる。
+    # ---------------------------------------------------------------- 主張を抜く
+    (
+        VERIFY,
+        "小数・桁区切りを1つの数として抜かない",
+        r'TOKEN = re.compile(r"[0-9]+(?:[.,][0-9]+)*|',
+        r'TOKEN = re.compile(r"[0-9]+|',
+    ),
+    (
+        VERIFY,
+        "語の記号を抜かない（`C++` が `C` になる）",
+        r'[A-Za-z][A-Za-z0-9_.+#-]*")',
+        r'[A-Za-z][A-Za-z0-9_]*")',
+    ),
+    (
+        VERIFY,
+        "要約の全角をそろえない",
+        '    for token in TOKEN.findall(unicodedata.normalize("NFKC", text)):',
+        "    for token in TOKEN.findall(text):",
+    ),
+    (
+        VERIFY,
+        "抜いた数の桁区切りを落とさない",
+        '            claim = THOUSANDS.sub("", token)',
+        "            claim = token",
+    ),
+    (
+        VERIFY,
+        "語の後ろのハイフンを残す",
+        '            claim = token.rstrip(".-")',
+        '            claim = token.rstrip(".")',
+    ),
+    (
+        VERIFY,
+        "文末の句点も語に含める",
+        '            claim = token.rstrip(".-")',
+        "            claim = token",
+    ),
+    (
+        VERIFY,
+        "同じ主張を何度も数える",
+        "        if claim not in found:",
+        "        if True:",
+    ),
+    # ---------------------------------------------------------------- 境界
+    (
+        VERIFY,
+        "主張の桁区切りを落とさない",
+        '    target = THOUSANDS.sub("", unicodedata.normalize("NFKC", claim))',
+        '    target = unicodedata.normalize("NFKC", claim)',
+    ),
+    (
+        VERIFY,
+        "主張の全角をそろえない",
+        '    target = THOUSANDS.sub("", unicodedata.normalize("NFKC", claim))',
+        '    target = THOUSANDS.sub("", claim)',
+    ),
+    (
+        VERIFY,
+        "**数を語として比べる**（小数の一部に当たる）",
+        "    if target[:1].isdigit():",
+        "    if False:",
+    ),
+    (
+        VERIFY,
+        "数の前の数字を見ない（`50` が `150` に当たる）",
+        r'(?<![0-9])(?<![0-9]\.){re.escape(target)}',
+        r'(?<![0-9]\.){re.escape(target)}',
+    ),
+    (
+        VERIFY,
+        "小数点の後ろの数字に当てる（`5` が `2.5` に当たる）",
+        r'(?<![0-9])(?<![0-9]\.){re.escape(target)}',
+        r'(?<![0-9]){re.escape(target)}',
+    ),
+    (
+        VERIFY,
+        "**数の後ろの数字を見ない**（`2倍` が `200倍` に当たる・U13 の罠）",
+        r'(?![0-9])(?!\.[0-9])"',
+        r'(?!\.[0-9])"',
+    ),
+    (
+        VERIFY,
+        "小数点の前の数字に当てる（`2` が `2.5` に当たる）",
+        r'(?![0-9])(?!\.[0-9])"',
+        r'(?![0-9])"',
+    ),
+    (
+        VERIFY,
+        "語の前の英字を見ない（`Script` が `JavaScript` に当たる）",
+        r'rf"(?<![A-Za-z0-9_]){re.escape(target)}',
+        r'rf"{re.escape(target)}',
+    ),
+    (
+        VERIFY,
+        "語の後ろの記号を見ない（`C` が `C++` に当たる）",
+        "(?![A-Za-z0-9_+#])",
+        "(?![A-Za-z0-9_])",
+    ),
+    (
+        VERIFY,
+        "**語の後ろの英字を見ない**（`Java` が `JavaScript` に当たる）",
+        "(?![A-Za-z0-9_+#])",
+        "(?![+#])",
+    ),
+    (
+        VERIFY,
+        "記号の後ろの続きを見ない（`Node` が `Node.js` に当たる）",
+        r'(?![.\-][A-Za-z0-9])"',
+        '"',
+    ),
+    (
+        VERIFY,
+        "英語の大小を見る",
+        "flags=re.IGNORECASE",
+        "flags=0",
+    ),
+    # ---------------------------------------------------------------- 本文の書式
+    (
+        VERIFY,
+        "本文の全角をそろえない",
+        '    text = unicodedata.normalize("NFKC", text)\n    text = LINK',
+        "    text = LINK",
+    ),
+    (
+        VERIFY,
+        "**リンクを文字だけにしない**（U12 で実測した引用が本文に無いことになる）",
+        r'    text = LINK.sub(r"\1", text)',
+        "    pass",
+    ),
+    (
+        VERIFY,
+        "むき出しの URL を根拠にする",
+        '    text = BARE_URL.sub(" ", text)',
+        "    pass",
+    ),
+    (
+        VERIFY,
+        "**書式記号を落とさない**（U12：強調を描画後の見た目で読んだ主張が外れる）",
+        '    text = DECOR.sub("", text)',
+        "    pass",
+    ),
+    (
+        VERIFY,
+        "下線の強調を書式と見ない",
+        r'DECOR = re.compile(r"\*\*|__|`")',
+        r'DECOR = re.compile(r"\*\*|`")',
+    ),
+    (
+        VERIFY,
+        "本文の桁区切りを落とさない",
+        '    return THOUSANDS.sub("", text)',
+        "    return text",
+    ),
+    # ---------------------------------------------------------------- 判定
+    (
+        VERIFY,
+        "本文が無いのに照合する（M8）",
+        "    if not body:",
+        "    if False:",
+    ),
+    (
+        VERIFY,
+        "**主張0件を照合済みにする**（M9）",
+        "    if not asserted:\n        verdict = UNVERIFIABLE",
+        "    if False:\n        verdict = UNVERIFIABLE",
+    ),
+    (
+        VERIFY,
+        "**本文に無い主張を数えない**",
+        "    missing = tuple(c for c in asserted if c not in found)",
+        "    missing = ()",
+    ),
+    (
+        VERIFY,
+        "**引用で判定する**（U13：引用は証拠ではない）",
+        "    elif missing:",
+        "    elif missing or quotes_missing:",
+    ),
+    (
+        VERIFY,
+        "引用の全角をそろえない",
+        "_clean(q) not in cleaned",
+        "q not in cleaned",
+    ),
+    # ---------------------------------------------------------------- 件数
+    (
+        VERIFY,
+        "要約の順を逆にする",
+        "checks=tuple(_check(s) for s in summaries)",
+        "checks=tuple(_check(s) for s in reversed(summaries))",
+    ),
+    (
+        VERIFY,
+        "**確認できなかったものを問題なしにする**",
+        "        return all(c.verdict == CONFIRMED for c in self.checks)",
+        "        return all(c.verdict != MISMATCH for c in self.checks)",
+    ),
+    (
+        VERIFY,
+        "判定ごとの件数を出さない",
+        "        return dict(Counter(c.verdict for c in self.checks))",
+        "        return {}",
+    ),
+    (
+        VERIFY,
+        "件数を出さずに「照合しました」とだけ言う",
+        '            f"{len(self.checks)} 件中 {counts.get(CONFIRMED, 0)} 件を照合できた"',
+        '            "照合しました"',
+    ),
+    (
+        VERIFY,
+        "主張の個数から、本文に無かったぶんを抜く",
+        "        looked = found + sum(len(c.missing) for c in self.checks)",
+        "        looked = found",
+    ),
+    (
+        VERIFY,
+        "**見ていないものを書かない**（数字と英語の語だけだと隠れる）",
+        '            "（照合したのは数字と英語の語だけ。日本語の言い回しは見ていない）"',
+        '            ""',
     ),
 ]
 

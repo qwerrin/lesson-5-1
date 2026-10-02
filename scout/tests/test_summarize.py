@@ -202,8 +202,28 @@ def test_上限を超える件数は呼ぶ前に止める() -> None:
     assert recorder.prompts == []
 
 
+def test_上限ちょうどは呼ぶ() -> None:
+    recorder = Recorder()
+
+    summarize.summarize(
+        [_scored(f"https://q.com/{n}") for n in range(2)], call=recorder, max_calls=2
+    )
+
+    assert len(recorder.prompts) == 2
+
+
 def test_既定の上限はrankの上限と同じ10件() -> None:
     assert summarize.MAX_CALLS == 10
+
+
+def test_既定の上限が効いている() -> None:
+    """**定数が 10 でも、既定値に使われていなければ上限は無い。**"""
+    recorder = Recorder()
+
+    with pytest.raises(ValueError):
+        summarize.summarize([_scored(f"https://q.com/{n}") for n in range(11)], call=recorder)
+
+    assert recorder.prompts == []
 
 
 def test_記事が0件なら呼ばない() -> None:
@@ -305,6 +325,15 @@ def test_引用が無くても要約は受け取る() -> None:
     assert got.done[0].quotes == ()
 
 
+def test_引用の欄そのものが無くても要約は受け取る() -> None:
+    """**型で `required` にしていても、相手が守るとは限らない。** 欠けても証拠が減るだけ。"""
+    got = summarize.summarize(
+        [_scored("https://q.com/x")], call=Recorder(_reply(text='{"summary": "要約。"}'))
+    )
+
+    assert got.done[0].quotes == ()
+
+
 # --------------------------------------------------------------------------
 # 件数
 # --------------------------------------------------------------------------
@@ -363,6 +392,44 @@ def test_トークン数が1件でも分からなければ合計を出さない(
 
     assert got.prompt_tokens is None
     assert got.output_tokens == 60
+
+
+def test_打ち切られた呼び出しのトークンも合計に入れる() -> None:
+    """**★ 課金されたのに、合計で 0 に見せない。**
+
+    `MAX_TOKENS` は出力の上限まで使い切ったもので、*いちばん高くつく失敗*。
+    要約としては使わないが、**課金は finish_reason に関係なく乗る**。
+    """
+    got = summarize.summarize(
+        [_scored("https://q.com/x")],
+        call=Recorder(_reply(finish="MAX_TOKENS", tokens=(2000, 8192))),
+    )
+
+    assert (got.failed[0].prompt_tokens, got.failed[0].output_tokens) == (2000, 8192)
+    assert (got.prompt_tokens, got.output_tokens) == (2000, 8192)
+
+
+def test_壊れた答えのトークンも合計に入れる() -> None:
+    recorder = Recorder(_reply(tokens=(100, 20)), _reply(text="これはJSONではない", tokens=(300, 40)))
+
+    got = summarize.summarize([_scored("https://q.com/a"), _scored("https://q.com/b")], call=recorder)
+
+    assert (got.prompt_tokens, got.output_tokens) == (400, 60)
+
+
+def test_例外で終わった呼び出しはトークン数を持たない() -> None:
+    """**答えが返っていないので、数が無い。** 0 と書かずに `None` で残す。
+
+    合計は「**答えが返った呼び出し**のトークン」。例外で終わった呼び出しは
+    合計に入らず、**件数は `call_failed` として別に出る**——*入らなかったことが見える*。
+    """
+    recorder = Recorder(_reply(tokens=(100, 20)), gemini_client.ApiError("HTTP 503"))
+
+    got = summarize.summarize([_scored("https://q.com/a"), _scored("https://q.com/b")], call=recorder)
+
+    assert (got.failed[0].prompt_tokens, got.failed[0].output_tokens) == (None, None)
+    assert (got.prompt_tokens, got.output_tokens) == (100, 20)
+    assert got.reasons == {summarize.CALL_FAILED: 1}
 
 
 def test_件数と理由ごとの内訳を出す() -> None:

@@ -52,6 +52,7 @@ FETCH = "scout/fetch.py"
 DEDUPE = "scout/dedupe.py"
 RANK = "scout/rank.py"
 SPLIT = "scout/split.py"
+SUMMARIZE = "scout/summarize.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -683,6 +684,217 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         SPLIT,
+        "内訳を空にする",
+        'breakdown = "・".join(f"{r} {n}" for r, n in sorted(self.reasons.items()))',
+        'breakdown = ""',
+    ),
+    # ================================================================ summarize
+    # ---------------------------------------------------------------- 課金
+    (
+        SUMMARIZE,
+        "**上限を見ない**（呼んでから気づいても課金は戻らない）",
+        "    if len(items) > max_calls:",
+        "    if False:",
+    ),
+    (
+        SUMMARIZE,
+        "上限ちょうどを超えたとみなす",
+        "    if len(items) > max_calls:",
+        "    if len(items) >= max_calls:",
+    ),
+    (
+        SUMMARIZE,
+        "既定の上限を rank より広げる",
+        "MAX_CALLS = 10",
+        "MAX_CALLS = 20",
+    ),
+    (
+        SUMMARIZE,
+        "既定の上限を使わない",
+        "    max_calls: int = MAX_CALLS,",
+        "    max_calls: int = 1000,",
+    ),
+    # ---------------------------------------------------------------- 失敗の扱い
+    (
+        SUMMARIZE,
+        "**何でも握る**（こちらのバグが API の失敗に化ける）",
+        "        except GeminiError as error:",
+        "        except Exception as error:",
+    ),
+    (
+        SUMMARIZE,
+        "API の失敗の中身を捨てる",
+        "            failed.append(Failure(scored=scored, reason=CALL_FAILED, detail=str(error)))",
+        '            failed.append(Failure(scored=scored, reason=CALL_FAILED, detail=""))',
+    ),
+    (
+        SUMMARIZE,
+        "**打ち切りを見ない**（途中で切れた要約が通る）",
+        '        if reply.finish_reason != "STOP":',
+        "        if False:",
+    ),
+    (
+        SUMMARIZE,
+        "終わり方が分からないものを STOP と混ぜる",
+        '        if reply.finish_reason != "STOP":',
+        '        if reply.finish_reason not in ("STOP", None):',
+    ),
+    (
+        SUMMARIZE,
+        "打ち切りの理由を捨てる",
+        '                    detail=f"finish_reason={reply.finish_reason}",',
+        '                    detail="",',
+    ),
+    (
+        SUMMARIZE,
+        "壊れた答えの原文を捨てる（何が返ったか分からないまま課金だけ乗る）",
+        '                    detail=f"{error}／原文: {reply.text[:DETAIL_LIMIT]}",',
+        "                    detail=str(error),",
+    ),
+    # ---------------------------------------------------------------- 渡すもの
+    (
+        SUMMARIZE,
+        "**本文を切って渡す**（切った先の主張が照合できない）",
+        '        f"# {article.title}\\n\\n{article.body}"',
+        "        f\"# {article.title}\\n\\n{(article.body or '')[:20000]}\"",
+    ),
+    (
+        SUMMARIZE,
+        "タイトルを渡さない",
+        '        f"# {article.title}\\n\\n{article.body}"',
+        '        f"\\n\\n{article.body}"',
+    ),
+    (
+        SUMMARIZE,
+        "「そのまま抜け」と指示しない",
+        "**本文からそのまま**抜き出して",
+        "抜き出して",
+    ),
+    # ---------------------------------------------------------------- 答えの解釈
+    (
+        SUMMARIZE,
+        "オブジェクトかどうかを見ない",
+        "    if not isinstance(payload, dict):",
+        "    if False:",
+    ),
+    (
+        SUMMARIZE,
+        "空白だけの要約を通す",
+        "    if not isinstance(text, str) or not text.strip():",
+        "    if not isinstance(text, str) or not text:",
+    ),
+    (
+        SUMMARIZE,
+        "要約が文字列かを見ない",
+        "    if not isinstance(text, str) or not text.strip():",
+        "    if not text:",
+    ),
+    (
+        SUMMARIZE,
+        "引用の形を見ない",
+        "    if not isinstance(quotes, list) or not all(isinstance(q, str) for q in quotes):",
+        "    if False:",
+    ),
+    (
+        SUMMARIZE,
+        "引用の中身が文字列かを見ない",
+        "    if not isinstance(quotes, list) or not all(isinstance(q, str) for q in quotes):",
+        "    if not isinstance(quotes, list):",
+    ),
+    (
+        SUMMARIZE,
+        "**引用の欄が無いと失敗にする**（証拠ではないのに要約を捨てる）",
+        '    quotes = payload.get("quotes", [])',
+        '    quotes = payload.get("quotes")',
+    ),
+    (
+        SUMMARIZE,
+        "要約の前後の空白を残す",
+        "    return text.strip(), tuple(quotes)",
+        "    return text, tuple(quotes)",
+    ),
+    # ---------------------------------------------------------------- 記録
+    (
+        SUMMARIZE,
+        "記事ごとのトークン数を捨てる",
+        "                quotes=quotes,\n                prompt_tokens=reply.prompt_tokens,",
+        "                quotes=quotes,\n                prompt_tokens=None,",
+    ),
+    (
+        SUMMARIZE,
+        "入力の合計に出力を数える",
+        "        return _sum(item.prompt_tokens for item in self._answered())",
+        "        return _sum(item.output_tokens for item in self._answered())",
+    ),
+    (
+        SUMMARIZE,
+        "**要約に使えなかった呼び出しのトークンを合計から落とす**（課金されたのに 0 に見える）",
+        "        return [*self.done, *(f for f in self.failed if f.reason != CALL_FAILED)]",
+        "        return [*self.done]",
+    ),
+    (
+        SUMMARIZE,
+        "例外で終わった呼び出しも合計に入れる（数が無いので合計が消える）",
+        "        return [*self.done, *(f for f in self.failed if f.reason != CALL_FAILED)]",
+        "        return [*self.done, *self.failed]",
+    ),
+    (
+        SUMMARIZE,
+        "打ち切られた呼び出しのトークンを残さない",
+        "                    detail=f\"finish_reason={reply.finish_reason}\",\n                    prompt_tokens=reply.prompt_tokens,",
+        "                    detail=f\"finish_reason={reply.finish_reason}\",\n                    prompt_tokens=None,",
+    ),
+    (
+        SUMMARIZE,
+        "壊れた答えのトークンを残さない",
+        "                    detail=f\"{error}／原文: {reply.text[:DETAIL_LIMIT]}\",\n                    prompt_tokens=reply.prompt_tokens,",
+        "                    detail=f\"{error}／原文: {reply.text[:DETAIL_LIMIT]}\",\n                    prompt_tokens=None,",
+    ),
+    (
+        SUMMARIZE,
+        "**分からないトークン数を0として足す**（実際より安く見える）",
+        "        if value is None:\n            return None",
+        "        if value is None:\n            continue",
+    ),
+    (
+        SUMMARIZE,
+        "渡された順を逆にする",
+        "    for scored in items:",
+        "    for scored in reversed(items):",
+    ),
+    # ---------------------------------------------------------------- 件数
+    (
+        SUMMARIZE,
+        "総数からできなかったぶんを抜く",
+        "        return len(self.done) + len(self.failed)",
+        "        return len(self.done)",
+    ),
+    (
+        SUMMARIZE,
+        "**1件失敗しても全体を成功にする**（M2）",
+        "        return not self.failed",
+        "        return True",
+    ),
+    (
+        SUMMARIZE,
+        "理由の内訳を出さない",
+        "        return dict(Counter(f.reason for f in self.failed))",
+        "        return {}",
+    ),
+    (
+        SUMMARIZE,
+        "件数を出さずに「要約しました」とだけ言う",
+        '            f"{self.total} 件中 {len(self.done)} 件を要約した"',
+        '            "要約しました"',
+    ),
+    (
+        SUMMARIZE,
+        "できなかった件数を出さない",
+        "            f\"／できなかった {len(self.failed)} 件（{breakdown or 'なし'}）\"",
+        "            f\"（{breakdown or 'なし'}）\"",
+    ),
+    (
+        SUMMARIZE,
         "内訳を空にする",
         'breakdown = "・".join(f"{r} {n}" for r, n in sorted(self.reasons.items()))',
         'breakdown = ""',

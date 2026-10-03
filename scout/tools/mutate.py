@@ -55,6 +55,7 @@ SPLIT = "scout/split.py"
 SUMMARIZE = "scout/summarize.py"
 VERIFY = "scout/verify_source.py"
 EMIT = "scout/emit.py"
+NOTIFY = "scout/notify.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -1695,6 +1696,228 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "新規と追記を取り違える",
         '        how = "新規" if self.created else "追記"',
         '        how = "追記" if self.created else "新規"',
+    ),
+    # ================================================================ notify
+    # 狙うのは **「異常が正常として届く」** と **「送れたのに送れなかった／その逆」**。
+    # ---------------------------------------------------------------- 判定
+    (
+        NOTIFY,
+        "emitted と emit_error を両方受け取る",
+        "    if (emitted is None) == (emit_error is None):",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "**取得元が0個でも正常にする**（M9）",
+        "    if not harvest.results:",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "**取れなかった取得元を見ない**（M2）",
+        "        if result.status == FAILED:",
+        "        if False:",
+    ),
+    (
+        NOTIFY,
+        "取れなかった理由を書かない",
+        "が取れなかった（{_line(result.detail)}）",
+        "が取れなかった",
+    ),
+    (
+        NOTIFY,
+        "取りこぼしを見ない（H1・M1）",
+        "        elif result.more:",
+        "        elif False:",
+    ),
+    (
+        NOTIFY,
+        "**要約の失敗を見ない**",
+        "    if digest.failed:",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "要約の失敗の件数を書かない",
+        'abnormal.append(f"要約できなかった {len(digest.failed)} 件")',
+        'abnormal.append("要約できなかった")',
+    ),
+    (
+        NOTIFY,
+        "**書けなかった回を異常にしない**",
+        '        abnormal.append("Inbox に書けなかった")',
+        "        pass",
+    ),
+    (
+        NOTIFY,
+        "**読み戻しの問題を見ない**",
+        "    elif not emitted.ok:",
+        "    elif False:",
+    ),
+    (
+        NOTIFY,
+        "**照合できなかった要約を見ない**",
+        "    if unconfirmed:",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "本文に無い主張だけを数える（確認できないを数えない）",
+        "c.verdict != CONFIRMED",
+        "c.verdict == \"mismatch\"",  # import していない名前を使うと NameError で偽の kill になる
+    ),
+    (
+        NOTIFY,
+        "**注意を異常より強くする**",
+        "    level = ABNORMAL if abnormal else ATTENTION if attention else NORMAL",
+        "    level = ATTENTION if attention else ABNORMAL if abnormal else NORMAL",
+    ),
+    (
+        NOTIFY,
+        "注意の理由を落とす",
+        "    return Health(level=level, reasons=(*abnormal, *attention))",
+        "    return Health(level=level, reasons=tuple(abnormal) or tuple(attention))",
+    ),
+    # ---------------------------------------------------------------- 本文
+    (
+        NOTIFY,
+        "状態の名前を取り違える",
+        'LABELS = {NORMAL: "正常", ATTENTION: "注意", ABNORMAL: "異常"}',
+        'LABELS = {NORMAL: "正常", ATTENTION: "正常", ABNORMAL: "異常"}',
+    ),
+    (
+        NOTIFY,
+        "1行目に時刻を書かない",
+        '｜{at:%Y-%m-%d %H:%M}"',
+        '"',
+    ),
+    (
+        NOTIFY,
+        "run-id を書かない",
+        ', f"run {run_id}"]',
+        "]",
+    ),
+    (
+        NOTIFY,
+        "**理由を本文に書かない**",
+        '        lines.extend(f"・{_line(r)}" for r in health.reasons)',
+        "        pass",
+    ),
+    (
+        NOTIFY,
+        "段の行を書かない",
+        '    lines.extend(f"- {_line(s)}" for s in stages)',
+        "    pass",
+    ),
+    (
+        NOTIFY,
+        "段の行を1行に潰さない",
+        'f"- {_line(s)}"',
+        'f"- {s}"',
+    ),
+    (
+        NOTIFY,
+        "**書けなかった回に理由を書かない**",
+        "Inbox に書けなかった: {_line(emit_error or '')}",
+        "Inbox に書けなかった",
+    ),
+    (
+        NOTIFY,
+        "書けた回に emit の結果を書かない",
+        "        lines.append(_line(emitted.summary))",
+        "        pass",
+    ),
+    # ---------------------------------------------------------------- 再送キー
+    (
+        NOTIFY,
+        "**再送キーに本文を混ぜない**（同じキーで中身を変える）",
+        'f"{run_id}\\n{body}"',
+        "run_id",
+    ),
+    (
+        NOTIFY,
+        "再送キーの区切りを外す",
+        'f"{run_id}\\n{body}"',
+        'f"{run_id}{body}"',
+    ),
+    (
+        NOTIFY,
+        "**再送キーを毎回ばらばらにする**（送り直しが二重送信になる）",
+        "    return str(uuid.uuid5(RETRY_NAMESPACE,",
+        "    return str(uuid.uuid4()) or str(uuid.uuid5(RETRY_NAMESPACE,",
+    ),
+    (
+        NOTIFY,
+        "**再送キーを付けない**",
+        '        headers={"X-Line-Retry-Key": retry_key(run_id, body)},',
+        "        headers={},",
+    ),
+    # ---------------------------------------------------------------- 送る
+    (
+        NOTIFY,
+        "**通数が読めないと送らない**（無音になる）",
+        "    except (line_send.SendError, line_auth.LineError):\n        return None",
+        "    except (line_send.SendError, line_auth.LineError):\n        raise",
+    ),
+    (
+        NOTIFY,
+        "**409 を全部「送ってあった」にする**",
+        "    duplicate = response.status_code == 409 and bool(accepted)",
+        "    duplicate = response.status_code == 409",
+    ),
+    (
+        NOTIFY,
+        "**409 を失敗にする**（送ってあったのに異常で終わる）",
+        "    duplicate = response.status_code == 409 and bool(accepted)",
+        "    duplicate = False",
+    ),
+    (
+        NOTIFY,
+        "**エラーの応答を見ない**",
+        "    if not duplicate:\n        line_auth.raise_for_line_error(response, *secrets)",
+        "    if False:\n        line_auth.raise_for_line_error(response, *secrets)",
+    ),
+    (
+        NOTIFY,
+        "**秘密を伏せずにエラーにする**",
+        "        line_auth.raise_for_line_error(response, *secrets)",
+        "        line_auth.raise_for_line_error(response)",
+    ),
+    (
+        NOTIFY,
+        "ヘッダ名の大小を区別する",
+        "        if str(key).lower() == name:",
+        "        if str(key) == name.title():",
+    ),
+    (
+        NOTIFY,
+        "受け付け済みの ID を記録しない",
+        "        accepted_request_id=accepted,",
+        '        accepted_request_id="",',
+    ),
+    (
+        NOTIFY,
+        "**宛先を伏せずに記録する**",
+        "        to_masked=line_send.mask_destination(to),",
+        "        to_masked=to,",
+    ),
+    (
+        NOTIFY,
+        "送った後の通数を、送る前の値にする",
+        "        usage_after=usage_after,",
+        "        usage_after=usage_before,",
+    ),
+    (
+        NOTIFY,
+        "**読めなかった通数を 0 にする**",
+        '    return "読めず" if value is None else str(value)',
+        '    return "0" if value is None else str(value)',
+    ),
+    (
+        NOTIFY,
+        "送ってあったと送ったを取り違える",
+        "            if self.duplicate\n",
+        "            if not self.duplicate\n",
     ),
 ]
 

@@ -22,12 +22,14 @@ G            `session` は差し込み。**このテストは `.env` を読ま�
 
 from __future__ import annotations
 
+import socket
 import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 import pytest
+import requests
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -45,6 +47,20 @@ from common import line_auth, line_send  # noqa: E402
 AT = datetime(2026, 9, 22, 21, 5, 0)
 TO = "U0123456789abcdef0123456789abcdef"
 TOKEN = "tok-secret-123"
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """G：**このファイルのどのテストも外へ接続できない。** 偽の session を渡し忘れても、ここで止まる。
+
+    ソースを grep するだけでは、`requests.Session()` の直接生成や別経路の接続に気づけない。
+    """
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError("テストからネットワークへ接続しようとした")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +183,21 @@ def test_abnormal_wins_over_attention_and_both_reasons_are_kept() -> None:
     assert len(health.reasons) == 2
 
 
+def test_unknown_source_status_is_abnormal_not_normal() -> None:
+    """`fetch` が将来別の状態を足した日に、**知らないものを正常に倒さない。**"""
+    health = _judge(harvest=_harvest(_source("qiita", "throttled")))
+    assert health.level == notify.ABNORMAL
+    assert any("qiita" in r and "throttled" in r for r in health.reasons)
+
+
+def test_audit_that_does_not_cover_every_summary_is_abnormal() -> None:
+    """要約が1件あるのに照合が0件——**照合が走っていない**。0件の不一致は正常に見える。"""
+    digest = summarize.Digest(done=(_summary(),), failed=())
+    health = _judge(digest=digest, audit=_audit())
+    assert health.level == notify.ABNORMAL
+    assert any("照合" in r for r in health.reasons)
+
+
 @pytest.mark.parametrize(
     ("emitted", "emit_error"),
     [(None, None), (_emitted(), "x")],
@@ -250,6 +281,11 @@ def test_retry_key_changes_with_body_and_with_run() -> None:
 
 def test_retry_key_does_not_confuse_run_and_body_boundary() -> None:
     assert notify.retry_key("r1", "2本文") != notify.retry_key("r12", "本文")
+
+
+def test_retry_key_does_not_collide_when_run_id_has_a_newline() -> None:
+    """**`emit` が run-id を弾いた回も送る**ので、ここには検証前の run-id が来る。"""
+    assert notify.retry_key("a\nb", "c") != notify.retry_key("a", "b\nc")
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +420,65 @@ def test_usage_before_failing_does_not_stop_the_send() -> None:
     assert len(_posts(session)) == 1
     assert delivered.usage_before is None
     assert delivered.usage_after == 11
+
+
+class _Broken(_Session):
+    """通信そのものが失敗する session。**HTTP の応答が返らない**経路。"""
+
+    def __init__(self, *, get_fails: tuple[bool, bool] = (False, False), post_fails: bool = False) -> None:
+        super().__init__(_ok())
+        self._get_fails = list(get_fails)
+        self._post_fails = post_fails
+
+    def get(self, url: str, **kwargs: object) -> _Response:
+        if self._get_fails.pop(0):
+            raise requests.ConnectionError("connection refused")
+        return super().get(url, **kwargs)
+
+    def post(self, url: str, **kwargs: object) -> _Response:
+        if self._post_fails:
+            raise requests.ConnectionError(f"failed with {TOKEN}")
+        return super().post(url, **kwargs)
+
+
+def test_usage_before_connection_error_does_not_stop_the_send() -> None:
+    """**HTTP 500 だけ真似ても足りない。** 応答が返らない通信の例外も握る（2026-10-03 のレビュー）。"""
+    session = _Broken(get_fails=(True, False))
+    delivered = _send(session)
+    assert len(_posts(session)) == 1
+    assert delivered.usage_before is None
+
+
+def test_usage_after_connection_error_still_reports_the_send() -> None:
+    """**送ったのに失敗扱い**にしない。呼び出し側が送り直しに行く。"""
+    delivered = _send(_Broken(get_fails=(False, True)))
+    assert delivered.message_id == "m-1"
+    assert delivered.usage_after is None
+
+
+def test_push_connection_error_becomes_a_line_error_without_the_secret() -> None:
+    with pytest.raises(line_auth.LineError) as raised:
+        _send(_Broken(post_fails=True))
+    assert TOKEN not in str(raised.value)
+
+
+def test_secret_in_the_body_is_masked_before_sending() -> None:
+    """本文は各段の文言の寄せ集め。**例外の文字列に鍵が混ざっても、送る直前で伏せる。**"""
+    session = _Session(_ok())
+    _send(session, body=f"Inbox に書けなかった: key={TOKEN}")
+    sent = _posts(session)[0]["json"]["messages"][0]["text"]  # type: ignore[index]
+    assert TOKEN not in sent
+
+
+def test_accepted_request_id_header_is_case_insensitive() -> None:
+    conflict = _Response(
+        409,
+        {"message": "x", "sentMessages": [{"id": "m-first", "quoteToken": "q"}]},
+        {"X-Line-Accepted-Request-Id": "req-1"},
+    )
+    delivered = _send(_Session(conflict))
+    assert delivered.duplicate is True
+    assert delivered.accepted_request_id == "req-1"
 
 
 def test_summary_shows_message_id_and_usage() -> None:

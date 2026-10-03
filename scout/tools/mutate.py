@@ -1358,15 +1358,27 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         EMIT,
-        "**digest と audit の突き合わせを外す**",
-        '    _same("digest の要約", digest.done, "audit の照合", [c.summary for c in audit.checks])\n',
-        "",
-    ),
-    (
-        EMIT,
         "**件数だけ合わせる**（数が同じで中身が違うのを通す）",
         "    if a != b:",
         "    if sum(a.values()) != sum(b.values()):",
+    ),
+    (
+        EMIT,
+        "**digest と audit を件数だけ合わせる**（照合した要約と書く要約がずれる）",
+        "    if tuple(c.summary for c in audit.checks) != digest.done:",
+        "    if len(audit.checks) != len(digest.done):",
+    ),
+    (
+        EMIT,
+        "同じ記事が要約と見出しの両方に出ても止めない",
+        "    if twice:",
+        "    if False:",
+    ),
+    (
+        EMIT,
+        "**符号化できない字を通す**（開いてから落ちて空ファイルが残る）",
+        '        return text.encode("utf-8")',
+        '        return text.encode("utf-8", errors="surrogatepass")',
     ),
     (
         EMIT,
@@ -1377,21 +1389,27 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         EMIT,
         "**節を部分一致で探す**（前の実行のタイトルに当たる）",
-        '    match = re.search(rf"^## [0-9]{{2}}:[0-9]{{2}} {re.escape(_label(run_id))}$", text, flags=re.MULTILINE)',
+        "    match = re.search(pattern, _normalize(text), flags=re.MULTILINE)",
         "    match = re.search(re.escape(_label(run_id)), text)",
+    ),
+    (
+        EMIT,
+        "**CRLF のファイルで節を探せない**（使用済みの run-id を見落とす）",
+        "    match = re.search(pattern, _normalize(text), flags=re.MULTILINE)",
+        "    match = re.search(pattern, text, flags=re.MULTILINE)",
     ),
     # ---------------------------------------------------------------- 書き込み
     (
         EMIT,
         "新規ファイルに frontmatter を書かない",
-        '        _write(path, "x", _head(at) + block)',
-        '        _write(path, "x", block)',
+        '        _write(path, "xb", _encode(_head(at) + block))',
+        '        _write(path, "xb", _encode(block))',
     ),
     (
         EMIT,
         "**追記ではなく上書きする**",
-        '        _write(path, "a", ',
-        '        _write(path, "w", ',
+        '        _write(path, "ab", data)',
+        '        _write(path, "wb", data)',
     ),
     (
         EMIT,
@@ -1401,15 +1419,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         EMIT,
-        "**改行を OS の既定にする**（Windows では CRLF）",
-        'encoding="utf-8", newline="\\n"',
-        'encoding="utf-8", newline=None',
-    ),
-    (
-        EMIT,
-        "BOM 付きで書く",
-        'with path.open(mode, encoding="utf-8",',
-        'with path.open(mode, encoding="utf-8-sig",',
+        "**BOM を本文として読む**（手で開いたファイルが誤報になる）",
+        '    return raw.decode("utf-8-sig")',
+        '    return raw.decode("utf-8")',
     ),
     (
         EMIT,
@@ -1469,8 +1481,20 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         EMIT,
         "**本文に無い主張を書かない**",
-        "    if not check.missing:",
+        "    if not marked:",
         "    if True:",
+    ),
+    (
+        EMIT,
+        "**本文に無い主張を逃がさない**（終わりの印と `[[` を偽造できる）",
+        '    marked = "・".join(f"「{_inline(c)}」" for c in check.missing if _line(c))',
+        '    marked = "・".join(f"「{c}」" for c in check.missing if _line(c))',
+    ),
+    (
+        EMIT,
+        "空の主張にも印を付ける",
+        "for c in check.missing if _line(c))",
+        "for c in check.missing)",
     ),
     (
         EMIT,
@@ -1523,6 +1547,24 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         EMIT,
+        "URL の `\\` を符号化しない（`\\)` でリンクが閉じない）",
+        '    "\\\\": "%5C", ',
+        "    ",
+    ),
+    (
+        EMIT,
+        "**URL の `[` を符号化しない**（`[[` が vault のリンクになる）",
+        '"[": "%5B", ',
+        "",
+    ),
+    (
+        EMIT,
+        "URL の `` ` `` を符号化しない（タイトル側と組んで code span になる）",
+        '"`": "%60",',
+        "",
+    ),
+    (
+        EMIT,
         "**http(s) かを見ない**（`ftp:` を通す）",
         '    if parts.scheme not in ("http", "https") or not parts.netloc:',
         "    if not parts.netloc:",
@@ -1535,16 +1577,34 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         EMIT,
-        "URL の改行を通す",
-        '    if any(ch.isspace() and ch != " " for ch in url):',
-        "    if False:",
+        "**URL の前後の空白を見ない**（urlsplit が黙って落とす）",
+        "    if url != url.strip() or any(",
+        "    if any(",
+    ),
+    (
+        EMIT,
+        "URL の制御文字を通す",
+        'unicodedata.category(ch) == "Cc" or ',
+        "",
+    ),
+    (
+        EMIT,
+        "URL の改行以外の空白（行区切りなど）を通す",
+        ' or (ch.isspace() and ch != " ") for ch in url',
+        " for ch in url",
     ),
     # ---------------------------------------------------------------- 読み戻し
     (
         EMIT,
         "**読み戻しの件数の期待値を、描いたものから取る**",
-        "entries=split.total)\n    return Emitted",
-        "entries=len(split.headline))\n    return Emitted",
+        "urls=urls, entries=split.total, day=",
+        "urls=urls, entries=len(split.headline), day=",
+    ),
+    (
+        EMIT,
+        "**CRLF を正規化しない**（git が触ったファイルを毎回誤報にする）",
+        '    return text.replace("\\r\\n", "\\n")',
+        "    return text",
     ),
     (
         EMIT,
@@ -1561,14 +1621,26 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         EMIT,
         "**記事の件数を見ない**",
-        "    if found != entries:",
+        "    if len(headings) != entries:",
         "    if False:",
     ),
     (
         EMIT,
         "**URL があるかを見ない**",
-        '    problems.extend(f"URL が無い: {url}" for url in urls if f"]({url})" not in section)',
+        '    problems.extend(f"URL が無い: {url}" for url in sorted((Counter(urls) - linked).elements()))',
         "",
+    ),
+    (
+        EMIT,
+        "同じ URL が2件あっても1件で通す",
+        "sorted((Counter(urls) - linked).elements())",
+        "sorted((Counter(set(urls)) - linked).elements())",
+    ),
+    (
+        EMIT,
+        "**見出しの URL を控えめに取る**（タイトルに仕込んだ `](URL)` に当たる）",
+        '_HEADING_URL = re.compile(r"^### \\[.*\\]\\((\\S*)\\)$")',
+        '_HEADING_URL = re.compile(r"^### \\[.*?\\]\\((\\S*)\\)")',
     ),
     (
         EMIT,
@@ -1590,15 +1662,27 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         EMIT,
-        "frontmatter の date の形を見ない",
-        "    if not isinstance(date, str) or not DATE.fullmatch(date):",
-        "    if not isinstance(date, str):",
+        "**frontmatter の date を見ない**（形が崩れても別の日でも通る）",
+        "    if date != day:",
+        "    if False:",
     ),
     (
         EMIT,
         "frontmatter の箇条書きを読まない",
         '        if line.startswith("  - ") and isinstance(fields.get(key), list):',
         "        if False:",
+    ),
+    (
+        EMIT,
+        "frontmatter の `[a, b]` 形を読まない（プロパティ画面で直すと誤報）",
+        '            if value.startswith("[") and value.endswith("]"):',
+        "            if False:",
+    ),
+    (
+        EMIT,
+        "frontmatter の引用符を外さない",
+        "        return value[1:-1]",
+        "        return value",
     ),
     (
         EMIT,

@@ -25,11 +25,19 @@ frontmatter は**ファイルを作るときだけ**書き、中身は固定に�
 タイトル・要約は Qiita と Gemini から来る。**節の構造を壊せない形**にしてから書く:
 要約は各行を `> ` で引用にし、`[` `]` `<` を逃がす。`[[` が残ると vault のリンク検査に
 *偽のリンク切れ*が出る。URL は http(s) だけ通す（`javascript:` を vault に置かない）。
+
+見ていないもの（2026-10-03 のレビュー・**承知で残す**）
+--------------------------------------------------------------------------
+
+**Obsidian 固有の記法**——`%%`（コメント・以降を閲覧画面で隠す）と `#語`（タグになる）。
+節の構造は壊さないが、要約が隠れたりタグ一覧が汚れたりする。Obsidian でどう逃がせば
+効くかを**公式で確かめていない**ので、推測で逃がしを書かない。
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -43,7 +51,6 @@ from verify_source import CONFIRMED, MISMATCH, UNVERIFIABLE, Audit, Check
 
 #: run-id に使える字。**節の見出しと HTML コメントの中に入る**ので、どちらも壊さない字だけ。
 RUN_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_.-]*")
-DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 TAGS = ("scout", "inbox")
 
 VERDICTS = {
@@ -52,8 +59,15 @@ VERDICTS = {
     UNVERIFIABLE: "確認できない",
 }
 
-#: URL の中で、Markdown のリンクを閉じてしまう字。
-_URL_ESCAPES = {" ": "%20", "(": "%28", ")": "%29", "<": "%3C", ">": "%3E"}
+#: URL の中で、Markdown のリンクを閉じてしまう字（`\)` は `)` の逃がしになる）・
+#: Obsidian のリンクになる字（`[[`）・タイトル側と組んで code span になる字。
+_URL_ESCAPES = {
+    " ": "%20", "(": "%28", ")": "%29", "<": "%3C", ">": "%3E",
+    "\\": "%5C", "[": "%5B", "]": "%5D", "`": "%60",
+}
+#: 見出しの行から URL を取り出す。**欲張りに取る**ので、タイトルに仕込んだ `](URL)` ではなく
+#: 行末の本物に当たる（タイトル側の `]` は逃がしてある）。
+_HEADING_URL = re.compile(r"^### \[.*\]\((\S*)\)$")
 
 
 @dataclass(frozen=True)
@@ -94,16 +108,20 @@ def emit(
     path = inbox / f"{at:%Y-%m-%d}-scout.md"
     created = not path.exists()
     if created:
-        _write(path, "x", _head(at) + block)
+        # **開く前にバイト列にする。** 開いてから符号化で落ちると、空のファイルが残る。
+        _write(path, "xb", _encode(_head(at) + block))
     else:
-        old = path.read_bytes().decode("utf-8")
+        data = _encode(block)
+        old = _decode(path.read_bytes())
         if _section_start(old, run_id) >= 0:
             raise ValueError(f"run-id `{run_id}` は {path.name} で使用済み。同じ節が2つあると読み戻しで区別できない")
         # 節は `\n` で始まるので、手で書かれた最終行に改行が無くても**見出しは行頭に来る**。
-        _write(path, "a", block)
+        _write(path, "ab", data)
 
-    text = path.read_bytes().decode("utf-8")
-    problems = readback(text, block=block, run_id=run_id, urls=urls, entries=split.total)
+    text = _decode(path.read_bytes())
+    problems = readback(
+        text, block=block, run_id=run_id, urls=urls, entries=split.total, day=f"{at:%Y-%m-%d}"
+    )
     return Emitted(path=path, created=created, entries=split.total, problems=problems)
 
 
@@ -123,7 +141,12 @@ def render(
     if not RUN_ID.fullmatch(run_id) or "--" in run_id:
         raise ValueError(f"run-id に使えない形: {run_id!r}")
     _same("split の要約対象", split.summarize, "digest の結果", [*digest.done, *digest.failed])
-    _same("digest の要約", digest.done, "audit の照合", [c.summary for c in audit.checks])
+    if tuple(c.summary for c in audit.checks) != digest.done:
+        # **キーではなく中身まで。** 照合した要約と書く要約がずれると、判定が別の文に付く。
+        raise ValueError("digest の要約と audit の照合が、順番か中身で一致しない")
+    twice = [k for k, n in Counter(map(_key, [*split.summarize, *split.headline])).items() if n > 1]
+    if twice:
+        raise ValueError(f"同じ記事が2回出る（要約と見出しの両方など）: {sorted(twice)}")
 
     entries: list[str] = []
     urls: list[str] = []
@@ -160,10 +183,17 @@ def render(
     return block, tuple(urls)
 
 
-def readback(text: str, *, block: str, run_id: str, urls: Iterable[str], entries: int) -> tuple[str, ...]:
-    """読み戻した全文を見て、**問題を全部**返す。空なら問題なし。"""
+def readback(
+    text: str, *, block: str, run_id: str, urls: Iterable[str], entries: int, day: str
+) -> tuple[str, ...]:
+    """読み戻した全文を見て、**問題を全部**返す。空なら問題なし。
+
+    **CRLF は改ざんとして数えない。** vault は `core.autocrlf=true` なので、
+    git が触ったファイルは CRLF で戻ってくる。
+    """
+    text = _normalize(text)
     problems: list[str] = []
-    problems.extend(_check_frontmatter(text))
+    problems.extend(_check_frontmatter(text, day))
 
     times = text.count(block)
     if times == 0:
@@ -177,10 +207,13 @@ def readback(text: str, *, block: str, run_id: str, urls: Iterable[str], entries
         problems.append(f"run {run_id} の節の始まりか終わりが見つからない")
         return tuple(problems)
     section = text[start:end]
-    found = sum(1 for line in section.splitlines() if line.startswith("### "))
-    if found != entries:
-        problems.append(f"記事が {found} 件（期待は {entries} 件）")
-    problems.extend(f"URL が無い: {url}" for url in urls if f"]({url})" not in section)
+    headings = [line for line in section.split("\n") if line.startswith("### ")]
+    if len(headings) != entries:
+        problems.append(f"記事が {len(headings)} 件（期待は {entries} 件）")
+    # **見出しの行ごとに数える。** 節のどこかに `](URL)` があるかで見ると、
+    # タイトルに仕込んだ文字列で通り、同じ URL が2件あっても1件で通る。
+    linked = Counter(m[1] for m in map(_HEADING_URL.fullmatch, headings) if m)
+    problems.extend(f"URL が無い: {url}" for url in sorted((Counter(urls) - linked).elements()))
     return tuple(problems)
 
 
@@ -189,10 +222,27 @@ def readback(text: str, *, block: str, run_id: str, urls: Iterable[str], entries
 # ---------------------------------------------------------------------------
 
 
-def _write(path: Path, mode: str, text: str) -> None:
-    # **改行は LF に固定する。** Windows の既定（CRLF）だと、読み戻しが書いたものと一致しない。
-    with path.open(mode, encoding="utf-8", newline="\n") as f:
-        f.write(text)
+def _write(path: Path, mode: str, data: bytes) -> None:
+    # **バイト列で書く。** テキストモードだと Windows の既定で改行が CRLF に化ける。
+    with path.open(mode) as f:
+        f.write(data)
+
+
+def _encode(text: str) -> bytes:
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError as e:
+        # 孤立サロゲートは `json.loads` を通ってくる。
+        raise ValueError(f"UTF-8 にできない字がある: {e}") from e
+
+
+def _decode(raw: bytes) -> str:
+    # 手で開いたエディタが BOM を付けることがある。**付いていても同じ中身として読む。**
+    return raw.decode("utf-8-sig")
+
+
+def _normalize(text: str) -> str:
+    return text.replace("\r\n", "\n")
 
 
 def _head(at: datetime) -> str:
@@ -207,7 +257,8 @@ def _label(run_id: str) -> str:
 
 def _section_start(text: str, run_id: str) -> int:
     """**節の見出しの行**で探す。部分一致だと、前の実行の記事タイトルに当たる。"""
-    match = re.search(rf"^## [0-9]{{2}}:[0-9]{{2}} {re.escape(_label(run_id))}$", text, flags=re.MULTILINE)
+    pattern = rf"^## [0-9]{{2}}:[0-9]{{2}} {re.escape(_label(run_id))}$"
+    match = re.search(pattern, _normalize(text), flags=re.MULTILINE)
     return match.start() if match else -1
 
 
@@ -215,7 +266,8 @@ def _end(run_id: str) -> str:
     return f"<!-- scout:end {run_id} -->"
 
 
-def _check_frontmatter(text: str) -> list[str]:
+def _check_frontmatter(text: str, day: str) -> list[str]:
+    """**自分が書く形と、Obsidian が書き直しうる形**だけを読む。YAML 全体は読まない。"""
     if not text.startswith("---\n"):
         return ["frontmatter が先頭に無い"]
     close = text.find("\n---\n", 3)
@@ -223,20 +275,33 @@ def _check_frontmatter(text: str) -> list[str]:
         return ["frontmatter が閉じていない"]
     fields: dict[str, list[str] | str] = {}
     key = ""
-    for line in text[4:close].splitlines():
+    for line in text[4:close].split("\n"):
         if line.startswith("  - ") and isinstance(fields.get(key), list):
-            fields[key].append(line[4:].strip())  # type: ignore[union-attr]
+            fields[key].append(_unquote(line[4:]))  # type: ignore[union-attr]
         elif ":" in line:
             key, _, value = line.partition(":")
-            fields[key] = value.strip() or []
+            value = value.strip()
+            if value.startswith("[") and value.endswith("]"):
+                # `tags: [scout, inbox]`——プロパティ画面や手で直すとこの形になる。
+                fields[key] = [_unquote(v) for v in value[1:-1].split(",") if v.strip()]
+            else:
+                fields[key] = _unquote(value) if value else []
     problems: list[str] = []
     tags = fields.get("tags")
     if not isinstance(tags, list) or "scout" not in tags:
         problems.append("frontmatter の tags に scout が無い")
     date = fields.get("date")
-    if not isinstance(date, str) or not DATE.fullmatch(date):
-        problems.append(f"frontmatter の date が YYYY-MM-DD でない: {date!r}")
+    # **形の検査は別に置かない。** `day` は必ず YYYY-MM-DD なので、形が崩れていれば一致しない。
+    if date != day:
+        problems.append(f"frontmatter の date が {date!r}（この節は {day}）")
     return problems
+
+
+def _unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +315,11 @@ def _heading(title: str, url: str) -> str:
 
 def _verdict(check: Check) -> str:
     label = VERDICTS.get(check.verdict, _inline(check.verdict))
-    if not check.missing:
+    # **消さずに印を付ける**（6-2）。主張は要約器が書いた語＝外から来た文字列なので、
+    # code span には入れない（中では逃がしが効かず、空の `` は span にならない）。
+    marked = "・".join(f"「{_inline(c)}」" for c in check.missing if _line(c))
+    if not marked:
         return label
-    # **消さずに印を付ける**（6-2）。
-    marked = "・".join(f"`{_line(c).replace('`', chr(39))}`" for c in check.missing)
     return f"{label}（{marked}）"
 
 
@@ -299,11 +365,15 @@ def _key(item: object) -> str:
 
 
 def _url(url: str) -> str:
+    # **`urlsplit` より先に見る。** 前後の空白や制御文字を黙って落とすので、
+    # 検査したものと書くものが食い違う（` https://…` が `%20https://…`＝相対リンクになる）。
+    if url != url.strip() or any(
+        unicodedata.category(ch) == "Cc" or (ch.isspace() and ch != " ") for ch in url
+    ):
+        raise ValueError(f"URL の前後に空白があるか、制御文字・改行を含む: {url!r}")
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.netloc:
         raise ValueError(f"http(s) でない URL は書かない: {url!r}")
-    if any(ch.isspace() and ch != " " for ch in url):
-        raise ValueError(f"URL に改行や制御的な空白がある: {url!r}")
     return "".join(_URL_ESCAPES.get(ch, ch) for ch in url)
 
 

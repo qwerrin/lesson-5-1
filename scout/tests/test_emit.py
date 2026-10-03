@@ -323,6 +323,7 @@ def test_url_with_parenthesis_and_space_is_encoded(tmp_path: Path) -> None:
         "https://qiita.com/x ",
         "\x00https://qiita.com/x",
         "https://qiita.com/\x7f",
+        "https://qiita.com/a b",  # 行区切り（制御文字ではないが、行を割る）
     ],
 )
 def test_non_http_url_stops_before_writing(tmp_path: Path, url: str) -> None:

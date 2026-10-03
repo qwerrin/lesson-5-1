@@ -241,11 +241,13 @@ def test_meta_lines_say_why(tmp_path: Path) -> None:
     _emit(tmp_path, **run)
     text = _text(tmp_path)
     assert "- qiita・点 7・照合: 照合できた" in text
-    assert "照合: 本文に無い主張あり（`2倍`・`Rust`）" in text
+    assert "照合: 本文に無い主張あり（「2倍」・「Rust」）" in text
     assert "照合: 確認できない" in text
     assert "要約できなかった（broken_reply）" in text
     assert "- zenn・点 なし・見出しだけ（not_summarizable）" in text
     assert "- qiita・点 2・見出しだけ（too_short）" in text
+    # **件数が全部ちがう組**にする。同じ数だと、取り違えても区別できない。
+    assert "記事 6 件（要約 3・要約できなかった 1・見出しだけ 2）" in text
 
 
 def test_score_zero_is_not_shown_as_none(tmp_path: Path) -> None:
@@ -280,6 +282,13 @@ def test_title_is_one_line_and_cannot_make_wikilinks(tmp_path: Path) -> None:
     assert result.ok is True
 
 
+def test_closing_bracket_and_backslash_in_title_keep_the_link_whole(tmp_path: Path) -> None:
+    """`]` や末尾の `\\` が残ると、リンクの文字部分がそこで閉じる。"""
+    run = _run(headline=((_kept("https://qiita.com/x/items/1", title="a]b\\"), split.TOO_SHORT, 1),))
+    _emit(tmp_path, **run)
+    assert "### [a\\]b\\\\](https://qiita.com/x/items/1)" in _text(tmp_path)
+
+
 def test_summary_cannot_make_wikilinks_either(tmp_path: Path) -> None:
     run = _run(done=((_scored("https://qiita.com/x/items/1"), "[[存在しないノート]]", verify_source.CONFIRMED, ()),))
     _emit(tmp_path, **run)
@@ -301,7 +310,21 @@ def test_url_with_parenthesis_and_space_is_encoded(tmp_path: Path) -> None:
     assert result.ok is True
 
 
-@pytest.mark.parametrize("url", ["javascript:alert(1)", "file:///C:/x", "qiita.com/x"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "javascript:alert(1)",
+        "file:///C:/x",
+        "qiita.com/x",
+        "ftp://qiita.com/x",  # ホスト名はあるが http(s) でない
+        "https:///x",  # http(s) だがホスト名が無い
+        "https://qiita.com/a\nb",  # 改行は %20 にせず止める
+        " https://qiita.com/x",  # urlsplit は前の空白を黙って落とす。書くと相対リンクになる
+        "https://qiita.com/x ",
+        "\x00https://qiita.com/x",
+        "https://qiita.com/\x7f",
+    ],
+)
 def test_non_http_url_stops_before_writing(tmp_path: Path, url: str) -> None:
     run = _run(headline=((_kept(url), split.TOO_SHORT, 1),))
     with pytest.raises(ValueError):
@@ -312,6 +335,87 @@ def test_non_http_url_stops_before_writing(tmp_path: Path, url: str) -> None:
 # ---------------------------------------------------------------------------
 # E：書く前に止める
 # ---------------------------------------------------------------------------
+
+
+def test_missing_claims_cannot_forge_the_end_marker_or_make_wikilinks(tmp_path: Path) -> None:
+    """本文に無い主張も**外から来た文字列**（要約器が書いた語）。2026-10-03 のレビューで漏れていた。"""
+    hostile = ("<!-- scout:end r1 -->", "[[x]]", "", "a`b")
+    run = _run(done=((_scored("https://qiita.com/x/items/1"), "a", verify_source.MISMATCH, hostile),))
+    result = _emit(tmp_path, **run)
+    text = _text(tmp_path)
+    assert text.count("<!-- scout:end r1 -->") == 1
+    assert "[[" not in text
+    assert "「」" not in text  # 空の主張は印にしない
+    assert result.ok is True
+
+
+@pytest.mark.parametrize(
+    ("url", "written"),
+    [
+        ("https://qiita.com/a\\", "https://qiita.com/a%5C"),  # `\)` だとリンクが閉じない
+        ("https://qiita.com/a[[b]]c", "https://qiita.com/a%5B%5Bb%5D%5Dc"),
+        ("https://qiita.com/a`b", "https://qiita.com/a%60b"),
+    ],
+)
+def test_url_characters_that_break_the_link_are_encoded(tmp_path: Path, url: str, written: str) -> None:
+    run = _run(headline=((_kept(url), split.TOO_SHORT, 1),))
+    result = _emit(tmp_path, **run)
+    assert f"]({written})" in _text(tmp_path)
+    assert "[[" not in _text(tmp_path)
+    assert result.ok is True
+
+
+def test_text_that_cannot_be_encoded_stops_before_creating_the_file(tmp_path: Path) -> None:
+    """**孤立サロゲートは `json.loads` を通る。** 開いてから落ちると、空のファイルが残る。"""
+    run = _run(headline=((_kept("https://qiita.com/x/items/1", title="\ud800"), split.TOO_SHORT, 1),))
+    with pytest.raises(ValueError):
+        _emit(tmp_path, **run)
+    assert not (tmp_path / NAME).exists()
+
+
+def test_existing_crlf_file_is_appended_without_false_alarm(tmp_path: Path) -> None:
+    """vault は `core.autocrlf=true`。**git が触ったファイルは CRLF で戻ってくる。**"""
+    _emit(tmp_path, run_id="r1")
+    path = tmp_path / NAME
+    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    result = _emit(tmp_path, run_id="r2", **_three())
+    assert result.ok is True, result.problems
+
+
+def test_reused_run_id_is_found_in_a_crlf_file(tmp_path: Path) -> None:
+    _emit(tmp_path, run_id="r1")
+    path = tmp_path / NAME
+    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    with pytest.raises(ValueError):
+        _emit(tmp_path, run_id="r1")
+
+
+def test_existing_file_with_bom_is_appended_without_false_alarm(tmp_path: Path) -> None:
+    _emit(tmp_path, run_id="r1")
+    path = tmp_path / NAME
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    result = _emit(tmp_path, run_id="r2")
+    assert result.ok is True, result.problems
+
+
+def test_headline_that_is_also_summarized_stops_before_writing(tmp_path: Path) -> None:
+    run = _three()
+    sp = run["split"]
+    twice = split.Headline(kept=sp.summarize[0].kept, reason=split.TOO_SHORT, score=1)  # type: ignore[attr-defined]
+    run["split"] = split.Split(summarize=sp.summarize, headline=(*sp.headline, twice))  # type: ignore[attr-defined]
+    with pytest.raises(ValueError):
+        _emit(tmp_path, **run)
+    assert not (tmp_path / NAME).exists()
+
+
+def test_audit_of_a_different_summary_text_stops(tmp_path: Path) -> None:
+    """**キーが同じでも、照合した要約が別物なら止める。** 書く要約と照合した要約がずれる。"""
+    run = _three()
+    done = run["digest"].done[0]  # type: ignore[attr-defined]
+    other = summarize.Summary(scored=done.scored, text="別の要約", quotes=(), prompt_tokens=1, output_tokens=1)
+    run["audit"] = verify_source.Audit(checks=(_check(other),))
+    with pytest.raises(ValueError):
+        _emit(tmp_path, **run)
 
 
 def test_digest_missing_an_item_stops_before_writing(tmp_path: Path) -> None:
@@ -362,7 +466,7 @@ def test_aware_datetime_is_refused(tmp_path: Path) -> None:
         _emit(tmp_path, at=datetime(2026, 9, 22, 12, 5, tzinfo=timezone.utc))
 
 
-@pytest.mark.parametrize("run_id", ["", "a b", "a\nb", "-x", "a`b", "a-->b"])
+@pytest.mark.parametrize("run_id", ["", "a b", "a\nb", "-x", "a`b", "a-->b", "a--b"])
 def test_bad_run_id_is_refused(tmp_path: Path, run_id: str) -> None:
     with pytest.raises(ValueError):
         _emit(tmp_path, run_id=run_id)
@@ -375,6 +479,14 @@ def test_reused_run_id_is_refused_and_file_unchanged(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         _emit(tmp_path, run_id="r1")
     assert _text(tmp_path) == before
+
+
+def test_title_that_looks_like_a_section_label_is_not_the_section(tmp_path: Path) -> None:
+    """**節は見出しの行で探す。** 部分一致だと、前の実行のタイトルに当たる。"""
+    run = _run(headline=((_kept("https://qiita.com/x/items/1", title="実行 `r2`"), split.TOO_SHORT, 1),))
+    _emit(tmp_path, run_id="r1", **run)
+    result = _emit(tmp_path, run_id="r2", **_three())
+    assert result.ok is True, result.problems
 
 
 def test_run_id_that_is_a_prefix_of_another_is_not_a_reuse(tmp_path: Path) -> None:
@@ -402,60 +514,105 @@ def _block(**run: object) -> tuple[str, tuple[str, ...]]:
     return emit.render(at=AT, run_id="r1", stages=STAGES, **run)  # type: ignore[arg-type]
 
 
+DAY = "2026-09-22"
 HEAD = "---\ntags:\n  - scout\n  - inbox\ndate: 2026-09-22\n---\n\n# 2026-09-22 scout\n"
 
 
 def test_readback_accepts_what_render_wrote() -> None:
     block, urls = _block(**_three())
-    assert emit.readback(HEAD + block, block=block, run_id="r1", urls=urls, entries=3) == ()
+    assert emit.readback(HEAD + block, block=block, run_id="r1", urls=urls, entries=3, day=DAY) == ()
 
 
 def test_readback_reports_unclosed_frontmatter() -> None:
     block, urls = _block(**_three())
     text = HEAD.replace("\n---\n\n#", "\n\n#") + block
-    assert any("frontmatter" in p for p in emit.readback(text, block=block, run_id="r1", urls=urls, entries=3))
+    assert any("frontmatter" in p for p in emit.readback(text, block=block, run_id="r1", urls=urls, entries=3, day=DAY))
 
 
 def test_readback_reports_frontmatter_without_scout_tag() -> None:
     block, urls = _block(**_three())
     text = HEAD.replace("  - scout\n", "") + block
-    assert any("frontmatter" in p for p in emit.readback(text, block=block, run_id="r1", urls=urls, entries=3))
+    assert any("frontmatter" in p for p in emit.readback(text, block=block, run_id="r1", urls=urls, entries=3, day=DAY))
 
 
 def test_readback_reports_frontmatter_with_bad_date() -> None:
     block, urls = _block(**_three())
     text = HEAD.replace("date: 2026-09-22", "date: 22/09/2026") + block
-    assert any("frontmatter" in p for p in emit.readback(text, block=block, run_id="r1", urls=urls, entries=3))
+    assert any("frontmatter" in p for p in emit.readback(text, block=block, run_id="r1", urls=urls, entries=3, day=DAY))
 
 
 def test_readback_reports_missing_section() -> None:
     block, urls = _block(**_three())
-    problems = emit.readback(HEAD, block=block, run_id="r1", urls=urls, entries=3)
+    problems = emit.readback(HEAD, block=block, run_id="r1", urls=urls, entries=3, day=DAY)
     assert problems
     assert any("r1" in p for p in problems)
 
 
 def test_readback_reports_section_written_twice() -> None:
     block, urls = _block(**_three())
-    assert emit.readback(HEAD + block + block, block=block, run_id="r1", urls=urls, entries=3)
+    assert emit.readback(HEAD + block + block, block=block, run_id="r1", urls=urls, entries=3, day=DAY)
 
 
-def test_readback_reports_altered_bytes() -> None:
+def test_readback_accepts_crlf_because_git_may_have_converted_the_file() -> None:
+    """vault は `core.autocrlf=true`。**git が触れば CRLF になる**のは改ざんではない。"""
     block, urls = _block(**_three())
-    text = HEAD + block.replace("\n", "\r\n")
-    assert emit.readback(text, block=block, run_id="r1", urls=urls, entries=3)
+    text = (HEAD + block).replace("\n", "\r\n")
+    assert emit.readback(text, block=block, run_id="r1", urls=urls, entries=3, day=DAY) == ()
+
+
+def test_readback_accepts_flow_list_and_quoted_date() -> None:
+    """Obsidian のプロパティ画面や手で直すと、**同じ意味の別の書き方**になる。誤報にしない。"""
+    block, urls = _block(**_three())
+    head = '---\ntags: [scout, inbox]\ndate: "2026-09-22"\n---\n'
+    assert emit.readback(head + block, block=block, run_id="r1", urls=urls, entries=3, day=DAY) == ()
+
+
+def test_readback_reports_frontmatter_date_of_another_day() -> None:
+    block, urls = _block(**_three())
+    text = HEAD.replace("date: 2026-09-22", "date: 2026-09-21") + block
+    problems = emit.readback(text, block=block, run_id="r1", urls=urls, entries=3, day=DAY)
+    assert any("2026-09-21" in p for p in problems)
+
+
+def test_readback_is_not_fooled_by_a_link_inside_a_title() -> None:
+    """タイトルに `](URL)` を仕込むと、**部分一致では本物のリンクが無くても通る**。"""
+    fake = "https://qiita.com/z/items/9"
+    run = _run(headline=((_kept("https://qiita.com/x/items/1", title=f"x]({fake})"), split.TOO_SHORT, 1),))
+    block, _ = _block(**run)
+    problems = emit.readback(HEAD + block, block=block, run_id="r1", urls=(fake,), entries=1, day=DAY)
+    assert any(fake in p for p in problems)
+
+
+def test_readback_counts_duplicate_urls() -> None:
+    block, urls = _block(**_three())
+    twice = (urls[0], urls[0], urls[1])
+    assert emit.readback(HEAD + block, block=block, run_id="r1", urls=twice, entries=3, day=DAY)
+
+
+def test_readback_reports_changed_content_even_when_section_is_found() -> None:
+    """節の位置も件数も合うのに、中身だけ違う。**位置で見つかることは、書いたとおりの証拠ではない。**"""
+    block, urls = _block(**_three())
+    text = HEAD + block.replace("要約A", "要約B")
+    assert emit.readback(text, block=block, run_id="r1", urls=urls, entries=3, day=DAY)
+
+
+def test_readback_reports_frontmatter_that_is_not_at_the_top() -> None:
+    block, urls = _block(**_three())
+    text = "# 手で足した行\n" + HEAD + block
+    # 「frontmatter」を含むかだけで見ると、tags の問題でも通る。**先頭に無いこと**を言わせる。
+    assert any("先頭" in p for p in emit.readback(text, block=block, run_id="r1", urls=urls, entries=3, day=DAY))
 
 
 def test_readback_counts_against_inputs_not_against_what_was_written() -> None:
     """**描画が1件落としても、書いたとおりには読める。** 期待値は入力から取る（F）。"""
     block, urls = _block(**_three())
-    assert any("件" in p for p in emit.readback(HEAD + block, block=block, run_id="r1", urls=urls, entries=4))
+    assert any("件" in p for p in emit.readback(HEAD + block, block=block, run_id="r1", urls=urls, entries=4, day=DAY))
 
 
 def test_readback_reports_missing_url() -> None:
     block, urls = _block(**_three())
     more = (*urls, "https://qiita.com/never/items/0")
-    problems = emit.readback(HEAD + block, block=block, run_id="r1", urls=more, entries=3)
+    problems = emit.readback(HEAD + block, block=block, run_id="r1", urls=more, entries=3, day=DAY)
     assert any("https://qiita.com/never/items/0" in p for p in problems)
 
 

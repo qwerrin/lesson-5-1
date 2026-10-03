@@ -54,6 +54,7 @@ RANK = "scout/rank.py"
 SPLIT = "scout/split.py"
 SUMMARIZE = "scout/summarize.py"
 VERIFY = "scout/verify_source.py"
+EMIT = "scout/emit.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -1309,6 +1310,307 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "**承知で残した穴を書かない**（`3分` が `3分類` で裏付けられることが隠れる）",
         '            "単位の字が別の語の頭かは見ていない）"',
         '            "）"',
+    ),
+    # ================================================================ emit
+    # 狙うのは **「書けたように見えて、読み戻すと違う」** と **「外の文字列が構造を壊す」**。
+    # ---------------------------------------------------------------- 書く前に止める
+    (
+        EMIT,
+        "**無い Inbox を黙って作る／素の例外にする**",
+        "    if not inbox.is_dir():",
+        "    if False:",
+    ),
+    (
+        EMIT,
+        "**ファイル名を実行日にする**（`today()` を使う実装）",
+        'path = inbox / f"{at:%Y-%m-%d}-scout.md"',
+        'path = inbox / f"{datetime.now():%Y-%m-%d}-scout.md"',
+    ),
+    (
+        EMIT,
+        "時差つきの日時を受け取る",
+        "    if at.tzinfo is not None:",
+        "    if False:",
+    ),
+    (
+        EMIT,
+        "run-id の `--` を通す（HTML コメントの中で壊れる）",
+        '    if not RUN_ID.fullmatch(run_id) or "--" in run_id:',
+        "    if not RUN_ID.fullmatch(run_id):",
+    ),
+    (
+        EMIT,
+        "run-id を何でも通す",
+        'RUN_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_.-]*")',
+        'RUN_ID = re.compile(r".+")',
+    ),
+    (
+        EMIT,
+        "run-id を頭だけ見る",
+        "    if not RUN_ID.fullmatch(run_id)",
+        "    if not RUN_ID.match(run_id)",
+    ),
+    (
+        EMIT,
+        "**split と digest の突き合わせを外す**",
+        '    _same("split の要約対象", split.summarize, "digest の結果", [*digest.done, *digest.failed])\n',
+        "",
+    ),
+    (
+        EMIT,
+        "**digest と audit の突き合わせを外す**",
+        '    _same("digest の要約", digest.done, "audit の照合", [c.summary for c in audit.checks])\n',
+        "",
+    ),
+    (
+        EMIT,
+        "**件数だけ合わせる**（数が同じで中身が違うのを通す）",
+        "    if a != b:",
+        "    if sum(a.values()) != sum(b.values()):",
+    ),
+    (
+        EMIT,
+        "**使用済みの run-id でも書く**",
+        "        if _section_start(old, run_id) >= 0:",
+        "        if False:",
+    ),
+    (
+        EMIT,
+        "**節を部分一致で探す**（前の実行のタイトルに当たる）",
+        '    match = re.search(rf"^## [0-9]{{2}}:[0-9]{{2}} {re.escape(_label(run_id))}$", text, flags=re.MULTILINE)',
+        "    match = re.search(re.escape(_label(run_id)), text)",
+    ),
+    # ---------------------------------------------------------------- 書き込み
+    (
+        EMIT,
+        "新規ファイルに frontmatter を書かない",
+        '        _write(path, "x", _head(at) + block)',
+        '        _write(path, "x", block)',
+    ),
+    (
+        EMIT,
+        "**追記ではなく上書きする**",
+        '        _write(path, "a", ',
+        '        _write(path, "w", ',
+    ),
+    (
+        EMIT,
+        "節の頭の改行を外す（手で書かれた最終行に見出しが続く）",
+        '        f"\\n## {at:%H:%M}',
+        '        f"## {at:%H:%M}',
+    ),
+    (
+        EMIT,
+        "**改行を OS の既定にする**（Windows では CRLF）",
+        'encoding="utf-8", newline="\\n"',
+        'encoding="utf-8", newline=None',
+    ),
+    (
+        EMIT,
+        "BOM 付きで書く",
+        'with path.open(mode, encoding="utf-8",',
+        'with path.open(mode, encoding="utf-8-sig",',
+    ),
+    (
+        EMIT,
+        "frontmatter の日付を外す",
+        'date: {at:%Y-%m-%d}\\n---',
+        'date: \\n---',
+    ),
+    # ---------------------------------------------------------------- 描く
+    (
+        EMIT,
+        "見出しの時刻を秒にする",
+        'f"\\n## {at:%H:%M} {_label(run_id)}\\n\\n"',
+        'f"\\n## {at:%H:%S} {_label(run_id)}\\n\\n"',
+    ),
+    (
+        EMIT,
+        "**節の終わりの印を書かない**",
+        '        + f"\\n{_end(run_id)}\\n"',
+        '        + "\\n"',
+    ),
+    (
+        EMIT,
+        "段の文字列を1行に潰さない",
+        '    lines = [f"- {_inline(stage)}" for stage in stages]',
+        '    lines = [f"- {stage}" for stage in stages]',
+    ),
+    (
+        EMIT,
+        "要約できなかった件数に要約の件数を書く",
+        "・要約できなかった {len(digest.failed)}",
+        "・要約できなかった {len(digest.done)}",
+    ),
+    (
+        EMIT,
+        "要約した記事の URL を読み戻しの期待値に入れない",
+        "        url = _url(scored.kept.article.url)\n        urls.append(url)\n",
+        "        url = _url(scored.kept.article.url)\n",
+    ),
+    (
+        EMIT,
+        "失敗した記事を先頭に出す",
+        "        entries.append(_failure(failure, url))",
+        "        entries.insert(0, _failure(failure, url))",
+    ),
+    (
+        EMIT,
+        "**要約を引用にしない**（中の `## ` が節になる）",
+        '    return "".join(f"> {_escape(line)}\\n" for line in text.splitlines())',
+        '    return "".join(f"{_escape(line)}\\n" for line in text.splitlines())',
+    ),
+    (
+        EMIT,
+        "照合の判定名を取り違える",
+        '    CONFIRMED: "照合できた",',
+        '    CONFIRMED: "確認できない",',
+    ),
+    (
+        EMIT,
+        "**本文に無い主張を書かない**",
+        "    if not check.missing:",
+        "    if True:",
+    ),
+    (
+        EMIT,
+        "要約できなかった理由を書かない",
+        "・要約できなかった（{_inline(failure.reason)}）",
+        "・要約できなかった",
+    ),
+    (
+        EMIT,
+        "**点 0 を「点なし」にする**",
+        '    score = "なし" if headline.score is None else str(headline.score)',
+        '    score = "なし" if not headline.score else str(headline.score)',
+    ),
+    # ---------------------------------------------------------------- 外から来た文字列
+    (
+        EMIT,
+        "タイトルの改行を残す",
+        '    return " ".join(text.split())',
+        "    return text",
+    ),
+    (
+        EMIT,
+        "**`[` を逃がさない**（`[[` が vault のリンクになる）",
+        '.replace("[", "\\\\[")',
+        "",
+    ),
+    (
+        EMIT,
+        "`]` を逃がさない（リンクの文字部分がそこで閉じる）",
+        '.replace("]", "\\\\]")',
+        "",
+    ),
+    (
+        EMIT,
+        "`\\` を逃がさない（末尾の `\\` が `]` を消す）",
+        '    return text.replace("\\\\", "\\\\\\\\")',
+        "    return text",
+    ),
+    (
+        EMIT,
+        "**`<` を逃がさない**（要約が節の終わりの印を偽造できる）",
+        '.replace("<", "&lt;")',
+        "",
+    ),
+    (
+        EMIT,
+        "URL の `(` を符号化しない",
+        '"(": "%28"',
+        '"(": "("',
+    ),
+    (
+        EMIT,
+        "**http(s) かを見ない**（`ftp:` を通す）",
+        '    if parts.scheme not in ("http", "https") or not parts.netloc:',
+        "    if not parts.netloc:",
+    ),
+    (
+        EMIT,
+        "ホスト名の無い URL を通す",
+        ' or not parts.netloc:\n        raise ValueError(f"http(s)',
+        ':\n        raise ValueError(f"http(s)',
+    ),
+    (
+        EMIT,
+        "URL の改行を通す",
+        '    if any(ch.isspace() and ch != " " for ch in url):',
+        "    if False:",
+    ),
+    # ---------------------------------------------------------------- 読み戻し
+    (
+        EMIT,
+        "**読み戻しの件数の期待値を、描いたものから取る**",
+        "entries=split.total)\n    return Emitted",
+        "entries=len(split.headline))\n    return Emitted",
+    ),
+    (
+        EMIT,
+        "**書いたとおりかを見ない**（位置と件数だけ）",
+        "    if times == 0:",
+        "    if False:",
+    ),
+    (
+        EMIT,
+        "同じ節が2回あっても言わない",
+        "    elif times > 1:",
+        "    elif False:",
+    ),
+    (
+        EMIT,
+        "**記事の件数を見ない**",
+        "    if found != entries:",
+        "    if False:",
+    ),
+    (
+        EMIT,
+        "**URL があるかを見ない**",
+        '    problems.extend(f"URL が無い: {url}" for url in urls if f"]({url})" not in section)',
+        "",
+    ),
+    (
+        EMIT,
+        "frontmatter が先頭にあるかを見ない",
+        '    if not text.startswith("---\\n"):',
+        "    if False:",
+    ),
+    (
+        EMIT,
+        "frontmatter が閉じているかを見ない",
+        "    if close < 0:",
+        "    if False:",
+    ),
+    (
+        EMIT,
+        "frontmatter の tags を見ない",
+        '    if not isinstance(tags, list) or "scout" not in tags:',
+        "    if False:",
+    ),
+    (
+        EMIT,
+        "frontmatter の date の形を見ない",
+        "    if not isinstance(date, str) or not DATE.fullmatch(date):",
+        "    if not isinstance(date, str):",
+    ),
+    (
+        EMIT,
+        "frontmatter の箇条書きを読まない",
+        '        if line.startswith("  - ") and isinstance(fields.get(key), list):',
+        "        if False:",
+    ),
+    (
+        EMIT,
+        "**読み戻しに問題があっても成功にする**",
+        "        return not self.problems",
+        "        return True",
+    ),
+    (
+        EMIT,
+        "新規と追記を取り違える",
+        '        how = "新規" if self.created else "追記"',
+        '        how = "追記" if self.created else "新規"',
     ),
 ]
 

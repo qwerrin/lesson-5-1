@@ -2027,6 +2027,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         CLI,
+        "**Qiita の limit が上限を超えても通す**（fetch が黙って丸める）",
+        "        if kind == fetch.QIITA and limit > fetch.QIITA_MAX_PER_PAGE:",
+        "        if False:",
+    ),
+    (
+        CLI,
         "取得元の名前の重複を通す",
         "    if len(set(names)) != len(names):",
         "    if False:",
@@ -2061,6 +2067,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:",
         "    except (OSError, UnicodeDecodeError) as e:",
     ),
+    (
+        CLI,
+        "BOM 付きの設定を読めない",
+        "tomllib.loads(path.read_text(encoding=\"utf-8-sig\"))",
+        "tomllib.loads(path.read_text(encoding=\"utf-8\"))",
+    ),
     # ---------------------------------------------------------------- 台帳
     (
         CLI,
@@ -2082,22 +2094,40 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         CLI,
+        "BOM 付きの台帳を読めない",
+        "json.loads(path.read_text(encoding=\"utf-8-sig\"))",
+        "json.loads(path.read_text(encoding=\"utf-8\"))",
+    ),
+    (
+        CLI,
         "**一時ファイルを残す**",
         "        if temporary.exists():\n            temporary.unlink()",
         "        if False:\n            temporary.unlink()",
+    ),
+    (
+        CLI,
+        "**書く直前に読み直さない**（その間に他の実行が書いた分を消す）",
+        "    seen = state.seen | (load_state(path).seen if path.is_file() else frozenset())",
+        "    seen = state.seen",
     ),
     # ---------------------------------------------------------------- 外へ出る前に止める
     (
         CLI,
         "**初回に --since が無くても進む**",
-        "    if since is None:\n        print(",
-        "    if False:\n        print(",
+        "    if since is None:\n        _say(",
+        "    if False:\n        _say(",
     ),
     (
         CLI,
         "**--since より台帳を優先する**",
         "        since = date.fromisoformat(args.since) if args.since is not None else state.last_run",
         "        since = state.last_run or date.fromisoformat(args.since)",
+    ),
+    (
+        CLI,
+        "未来の --since を通す（毎回0件で正常になる）",
+        "    if since > at.date():",
+        "    if False:",
     ),
     (
         CLI,
@@ -2113,40 +2143,58 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         CLI,
+        "**.env が無いと traceback で落ちる**（終了コード 2 にならない）",
+        "env_file.EnvFileError, OSError, ValueError) as e:",
+        "OSError) as e:",
+    ),
+    (
+        CLI,
         "**--dry-run でも先へ進む**",
-        "    if args.dry_run:\n        print(",
-        "    if False:\n        print(",
+        "    if args.dry_run:\n        _say(",
+        "    if False:\n        _say(",
     ),
     # ---------------------------------------------------------------- 台帳を進める条件
     (
         CLI,
+        "**--inbox の試しで本番の台帳を進める**",
+        "    if args.inbox is not None:",
+        "    if False:",
+    ),
+    (
+        CLI,
         "**書けなかった回も記事を「見た」にする**（M4）",
-        "    if emitted is not None and emitted.ok:",
-        "    if True:",
+        "    elif emitted is None or not emitted.ok:",
+        "    elif False:",
     ),
     (
         CLI,
         "**読み戻しに問題があっても「見た」にする**",
-        "    if emitted is not None and emitted.ok:",
-        "    if emitted is not None:",
+        "    elif emitted is None or not emitted.ok:",
+        "    elif emitted is None:",
     ),
     (
         CLI,
         "**取れなかった取得元がある回も日付を進める**（その日を飛ばす）",
-        "        advance = harvest.status != fetch.FAILED",
-        "        advance = True",
+        "        advance = harvest.status != fetch.FAILED and not",
+        "        advance = True and not",
     ),
     (
         CLI,
-        "見出しだけの記事を「見た」にしない",
-        " | {h.kept.key for h in parts.headline}",
+        "**まだ先がある回も日付を進める**（残りを二度と取れない）",
+        " and not any(r.more for r in harvest.results)",
         "",
     ),
     (
         CLI,
-        "台帳を前の分を捨てて書く",
-        "        new_state = State(seen=state.seen | written,",
-        "        new_state = State(seen=frozenset(written),",
+        "見出しだけの記事を「見た」にしない",
+        " | {h.kept.article.url for h in parts.headline}",
+        "",
+    ),
+    (
+        CLI,
+        "**正規化した値を台帳に残す**（`%26` の URL が既読にならない）",
+        "{s.kept.article.url for s in parts.summarize}",
+        "{s.kept.key for s in parts.summarize}",
     ),
     (
         CLI,
@@ -2154,24 +2202,36 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "            ledger_failed = True\n",
         "",
     ),
-    # ---------------------------------------------------------------- 通知・終了コード
+    # ---------------------------------------------------------------- 秘密・通知・終了コード
     (
         CLI,
-        "**emit の例外で通知まで届かない**",
+        "**段の行を伏せずに足す**（鍵が Inbox のノートに入る）",
+        "        self.lines.append(self.hide(line))",
+        "        self.lines.append(line)",
+    ),
+    (
+        CLI,
+        "**画面に出す本文を伏せない**（理由の行は伏せる前のまま入る）",
+        "    _say(stages.hide(body))",
+        "    _say(body)",
+    ),
+    (
+        CLI,
+        "**emit の例外を外側に任せる**（具体的な理由が通知に届かない）",
         "    except (ValueError, OSError) as e:\n        # **書けなかった回も送る。**",
         "    except ZeroDivisionError as e:\n        # **書けなかった回も送る。**",
     ),
     (
         CLI,
-        "**画面に出す本文の秘密を伏せない**",
-        "    print(line_auth.redact(body, *conn.secrets))",
-        "    print(body)",
+        "**想定外の例外で通知まで届かない**",
+        "    except Exception as e:  # noqa: BLE001 - **想定外の例外でも無音にしない**（M7）",
+        "    except ZeroDivisionError as e:  # noqa: BLE001",
     ),
     (
         CLI,
         "**--no-notify でも送る**",
-        "    if args.no_notify:",
-        "    if False:",
+        "    if not args.no_notify:",
+        "    if True:",
     ),
     (
         CLI,
@@ -2182,14 +2242,39 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         CLI,
         "**異常でも 0 で終わる**",
-        "    if health.level == notify.ABNORMAL or not sent or ledger_failed:",
-        "    if not sent or ledger_failed:",
+        "    if result.health.level == notify.ABNORMAL or not sent or result.ledger_failed:",
+        "    if not sent or result.ledger_failed:",
     ),
     (
         CLI,
         "**注意でも 1 で終わる**（毎日赤くなる）",
-        "    if health.level == notify.ABNORMAL or not sent or ledger_failed:",
-        "    if health.level != notify.NORMAL or not sent or ledger_failed:",
+        "    if result.health.level == notify.ABNORMAL or not sent or result.ledger_failed:",
+        "    if result.health.level != notify.NORMAL or not sent or result.ledger_failed:",
+    ),
+    (
+        CLI,
+        "**画面に書けない字で落ちる**（送信や終了コードまで届かない）",
+        "    except UnicodeEncodeError:\n        encoding =",
+        "    except UnicodeEncodeError:\n        raise\n        encoding =",
+    ),
+    # ---------------------------------------------------------------- LINE の上限
+    (
+        CLI,
+        "**長い本文を切らない**（いちばん要る異常のときに 400 で落ちる）",
+        "    if _utf16(text) <= limit:\n        return text",
+        "    if True:\n        return text",
+    ),
+    (
+        CLI,
+        "**字数を UTF-16 で数えない**（サロゲートペアで上限を超える）",
+        "        used += _utf16(ch)",
+        "        used += 1",
+    ),
+    (
+        CLI,
+        "省いたことを書かない",
+        "    return head + note.format(len(text) - len(head))",
+        "    return head",
     ),
     # ---------------------------------------------------------------- 本物の接続の部品
     (
@@ -2215,6 +2300,24 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "**取得に timeout を付けない**",
         "    reply = requests.get(url, timeout=TIMEOUT, headers=",
         "    reply = requests.get(url, headers=",
+    ),
+    (
+        CLI,
+        "**--dry-run でない回に鍵を読まない**",
+        "    if not remote:\n        return Connections(",
+        "    if True:\n        return Connections(",
+    ),
+    (
+        CLI,
+        "LINE の session を timeout で包まない",
+        "        session=TimeoutSession(line_auth.build_session(token), timeout=TIMEOUT),",
+        "        session=line_auth.build_session(token),",
+    ),
+    (
+        CLI,
+        "鍵を伏せ字の一覧に入れない",
+        "        secrets=(token, api_key),",
+        "        secrets=(token,),",
     ),
     (
         CLI,

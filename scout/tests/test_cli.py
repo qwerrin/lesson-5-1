@@ -532,6 +532,11 @@ def test_emit_error_still_sends_and_leaves_the_ledger(tmp_path: Path) -> None:
     code = _main(tmp_path, world)
     assert code == 1
     assert "Inbox に書けなかった" in world.line.bodies[0]
+    # **具体的な理由まで届く。** 外側の「途中で止まった」に落ちると、何が起きたか分からない。
+    assert "使用済み" in world.line.bodies[0]
+    # 外側の「途中で止まった」に落ちると理由の文言は同じでも、**その後の段（台帳の行）が消える。**
+    assert "途中で止まった" not in world.line.bodies[0]
+    assert "台帳: 更新しなかった" in world.line.bodies[0]
     assert not (tmp_path / "state" / "seen.json").exists()
 
 

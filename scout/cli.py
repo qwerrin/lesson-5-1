@@ -80,6 +80,8 @@ DEFAULT_STATE = _HERE / "state" / "seen.json"
 #: 1回の HTTP 呼び出しの待ち時間（秒）。**`build_session` は timeout を持たない**ので、ここで足す。
 TIMEOUT = 30
 USER_AGENT = "scout (+https://github.com/qwerrin/lesson-5-1)"
+#: LINE のテキストの上限。**数え方は UTF-16 のコード単位**（公式の Messaging API リファレンス・2026-10-03 に確認）。
+LINE_TEXT_LIMIT = 5000
 
 EXIT_OK = 0
 EXIT_ABNORMAL = 1
@@ -118,7 +120,8 @@ class Config:
 def load_config(path: Path, *, inbox: Path | None = None) -> Config:
     """設定を読んで**全部**確かめる。知らない鍵も誤りにする——書き間違いを黙って捨てない。"""
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        # BOM を許す。PowerShell 5 の `Set-Content -Encoding UTF8` は BOM を付ける。
+        data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError as e:
         raise ConfigError(f"設定が無い: {path}") from e
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
@@ -171,7 +174,11 @@ def _sources(value: Any) -> tuple[fetch.Source, ...]:
         name, kind, query = (_text(item.get(k), f"{where}.{k}") for k in ("name", "kind", "query"))
         if kind not in _KINDS:
             raise ConfigError(f"{where}.kind が知らない種類: {kind}（{sorted(_KINDS)}）")
-        sources.append(fetch.Source(name=name, kind=kind, query=query, limit=_positive(item.get("limit"), f"{where}.limit")))
+        limit = _positive(item.get("limit"), f"{where}.limit")
+        if kind == fetch.QIITA and limit > fetch.QIITA_MAX_PER_PAGE:
+            # `fetch` は黙って上限に丸める。**書いた数と取る数が食い違う**のを、ここで止める。
+            raise ConfigError(f"{where}.limit が Qiita の1回の上限（{fetch.QIITA_MAX_PER_PAGE}）を超える: {limit}")
+        sources.append(fetch.Source(name=name, kind=kind, query=query, limit=limit))
     names = [s.name for s in sources]
     if len(set(names)) != len(names):
         raise ConfigError(f"取得元の名前が重複している: {names}")
@@ -229,7 +236,8 @@ def _relative(config_path: Path, value: Any) -> Path:
 
 @dataclass(frozen=True)
 class State:
-    #: Inbox に**書いて読み戻せた**記事のキー（`dedupe.normalize` の値）。
+    #: Inbox に**書いて読み戻せた**記事の**元の URL**。正規化は `dedupe` がする
+    #: ——正規化した値を残すと、2回かけると変わる URL（`%26`）が既読にならない。
     seen: frozenset[str]
     #: 次の回の期間の始まり。**取れなかった取得元がある回は進めない。**
     last_run: date | None
@@ -239,7 +247,7 @@ def load_state(path: Path) -> State:
     if not path.exists():
         return State(seen=frozenset(), last_run=None)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         raise StateError(f"台帳を読めない（{path}）: {e}") from e
     if not isinstance(data, dict):
@@ -256,11 +264,17 @@ def load_state(path: Path) -> State:
 
 
 def save_state(path: Path, state: State) -> None:
-    """**一時ファイルに書いてから置き換える。** 途中で落ちても、前の台帳は壊れない。"""
+    """**一時ファイルに書いてから置き換える。** 途中で落ちても、前の台帳は壊れない。
+
+    **書く直前に読み直して、`seen` は和集合にする。** 起動時に読んだ台帳に足して書き戻すと、
+    その間に別の実行（手動とスケジューラが重なる）が書いた分を消す
+    （教訓 `read-modify-write-drops-concurrent-edits`）。`seen` は増えるだけの集合なので、和集合で失わない。
+    """
+    seen = state.seen | (load_state(path).seen if path.is_file() else frozenset())
     data = {
         "last_run": None if state.last_run is None else state.last_run.isoformat(),
         # 並べて書く。差分を人が読めるように。
-        "seen": sorted(state.seen),
+        "seen": sorted(seen),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -376,97 +390,200 @@ def main(
         config = load_config(args.config, inbox=args.inbox)
         state = load_state(args.state)
     except (ConfigError, StateError) as e:
-        print(e, file=sys.stderr)
-        return EXIT_CONFIG
-    try:
-        since = date.fromisoformat(args.since) if args.since is not None else state.last_run
-    except ValueError:
-        print(f"--since は YYYY-MM-DD で: {args.since}", file=sys.stderr)
-        return EXIT_CONFIG
-    if since is None:
-        print("初回は --since YYYY-MM-DD が要る（台帳に前回の日付が無い）", file=sys.stderr)
+        _say(str(e), sys.stderr)
         return EXIT_CONFIG
 
     # **時刻は1回だけ取る。** run-id にも本文にも同じ値を使う（送り直しで2通にしない）。
     at = now()
+    try:
+        since = date.fromisoformat(args.since) if args.since is not None else state.last_run
+    except ValueError:
+        _say(f"--since は YYYY-MM-DD で: {args.since}", sys.stderr)
+        return EXIT_CONFIG
+    if since is None:
+        _say("初回は --since YYYY-MM-DD が要る（台帳に前回の日付が無い）", sys.stderr)
+        return EXIT_CONFIG
+    if since > at.date():
+        # 未来の日付だと、毎回0件で「正常」になる。
+        _say(f"期間の始まり（{since}）が今日（{at.date()}）より後", sys.stderr)
+        return EXIT_CONFIG
+
     run_id = f"{at:%Y%m%d-%H%M%S}"
     try:
         conn = (connect or connect_real)(config, remote=not args.dry_run)
-    except (gemini_client.GeminiError, line_auth.LineError, OSError) as e:
-        print(f"接続を組み立てられない: {e}", file=sys.stderr)
+    except (gemini_client.GeminiError, line_auth.LineError, env_file.EnvFileError, OSError, ValueError) as e:
+        _say(f"接続を組み立てられない: {e}", sys.stderr)
         return EXIT_CONFIG
 
-    # ---- 取得から振り分けまで
+    stages = _Stages(conn.secrets)
+    try:
+        result = _run(config, state, conn, args=args, at=at, run_id=run_id, since=since, stages=stages)
+    except Exception as e:  # noqa: BLE001 - **想定外の例外でも無音にしない**（M7）
+        reason = stages.hide(f"途中で止まった（台帳は触っていない）: {type(e).__name__}: {e}")
+        if args.dry_run:
+            _say(reason, sys.stderr)
+            return EXIT_ABNORMAL
+        health = notify.Health(level=notify.ABNORMAL, reasons=(reason,))
+        result = _Result(health=health, emitted=None, emit_error="途中で止まったので書いていない", ledger_failed=False)
+    if result is None:
+        return EXIT_OK  # --dry-run
+
+    body = fit_for_line(
+        notify.compose(
+            at=at,
+            run_id=run_id,
+            health=result.health,
+            stages=stages.lines,
+            emitted=result.emitted,
+            emit_error=result.emit_error,
+        )
+    )
+
+    # ---- 通知。**先に送ってから画面に出す**——画面に書けない字があっても、送信まで届くように。
+    sent = True
+    report = "--no-notify なので、LINE には送っていない"
+    if not args.no_notify:
+        try:
+            report = notify.send(conn.session, to=conn.to, body=body, run_id=run_id, secrets=conn.secrets).summary
+        except (line_auth.LineError, line_send.SendError) as e:
+            sent = False
+            # 秘密は `notify.send` が投げる時点で伏せてある（push の失敗も通信の失敗も）。
+            report = f"LINE へ送れなかった: {e}"
+    # **ここでも伏せる。** `notify.judge` の理由には取得元のエラー文言が伏せる前のまま入る
+    # （段の行だけ伏せても足りない。2026-10-03 に「死んだ枝」と読み違えて外し、テストが止めた）。
+    _say(stages.hide(body))
+    _say("-" * 60)
+    _say(report, sys.stdout if sent else sys.stderr)
+
+    if result.health.level == notify.ABNORMAL or not sent or result.ledger_failed:
+        return EXIT_ABNORMAL
+    return EXIT_OK
+
+
+class _Stages:
+    """段の行。**足した時点で秘密を伏せる。** Inbox（git で追跡）にも画面にも LINE にも、伏せたものしか流さない。"""
+
+    def __init__(self, secrets: tuple[str, ...]) -> None:
+        self._secrets = secrets
+        self.lines: list[str] = []
+
+    def hide(self, text: str) -> str:
+        return line_auth.redact(text, *self._secrets)
+
+    def add(self, line: str) -> None:
+        self.lines.append(self.hide(line))
+
+
+@dataclass(frozen=True)
+class _Result:
+    health: notify.Health
+    emitted: emit.Emitted | None
+    emit_error: str | None
+    ledger_failed: bool
+
+
+def _run(
+    config: Config,
+    state: State,
+    conn: Connections,
+    *,
+    args: argparse.Namespace,
+    at: datetime,
+    run_id: str,
+    since: date,
+    stages: _Stages,
+) -> _Result | None:
+    """8段をつなぐ。`--dry-run` は振り分けまでで止めて `None` を返す。"""
     harvest = fetch.harvest(config.sources, conn.get, since=datetime.combine(since, time()))
     sifted = dedupe.sift(harvest.articles, seen=state.seen)
     ranking = rank.rank(sifted.kept, config.profile)
     parts = split.split(ranking, summarizable=config.summarizable, min_body=config.min_body)
-    stages = [
-        f"fetch: {_fetch_line(harvest)}",
-        f"dedupe: {sifted.summary}",
-        f"rank: {ranking.summary}",
-        f"split: {parts.summary}",
-    ]
+    stages.add(f"fetch: {_fetch_line(harvest)}")
+    stages.add(f"dedupe: {sifted.summary}")
+    stages.add(f"rank: {ranking.summary}")
+    stages.add(f"split: {parts.summary}")
     if args.dry_run:
-        print("\n".join(stages))
-        print("--dry-run なので、要約・書き込み・台帳・通知はしていない")
-        return EXIT_OK
+        _say("\n".join(stages.lines))
+        _say("--dry-run なので、要約・書き込み・台帳・通知はしていない")
+        return None
 
-    # ---- 要約・照合・書き込み
     if conn.call is None:
         raise RuntimeError("要約の接続が無い（remote=True で組み立てたはず）")
     digest = summarize.summarize(parts.summarize, call=conn.call, max_calls=config.max_calls)
     audit = verify_source.verify(digest.done)
-    stages += [f"summarize: {digest.summary}", f"verify: {audit.summary}"]
+    stages.add(f"summarize: {digest.summary}")
+    stages.add(f"verify: {audit.summary}")
 
     emitted: emit.Emitted | None = None
     emit_error: str | None = None
     try:
         emitted = emit.emit(
-            config.inbox, at=at, run_id=run_id, stages=tuple(stages), split=parts, digest=digest, audit=audit
+            config.inbox, at=at, run_id=run_id, stages=tuple(stages.lines), split=parts, digest=digest, audit=audit
         )
     except (ValueError, OSError) as e:
         # **書けなかった回も送る。** 例外のまま抜けると、通知まで届かない。
-        emit_error = f"{type(e).__name__}: {e}"
+        emit_error = stages.hide(f"{type(e).__name__}: {e}")
 
     ledger_failed = False
-    if emitted is not None and emitted.ok:
-        written = {s.kept.key for s in parts.summarize} | {h.kept.key for h in parts.headline}
-        # **取れなかった取得元がある回は、前回の日付を進めない。**
-        advance = harvest.status != fetch.FAILED
-        new_state = State(seen=state.seen | written, last_run=at.date() if advance else state.last_run)
+    if args.inbox is not None:
+        # **試しの場所に書いた記事を「見た」にすると、本番の Inbox に二度と来ない。**
+        stages.add("台帳: 更新しなかった（--inbox の試しなので、本番の台帳を進めない）")
+    elif emitted is None or not emitted.ok:
+        stages.add("台帳: 更新しなかった（Inbox に書けていないので、記事を「見た」にしない）")
+    else:
+        # **元の URL を残す。** `dedupe.normalize` は2回かけると変わる URL がある（`%26`）。
+        written = {s.kept.article.url for s in parts.summarize} | {h.kept.article.url for h in parts.headline}
+        # **取れなかった取得元・まだ先がある取得元がある回は、前回の日付を進めない。**
+        # 期間は日付までなので、進めるとその日の残りを二度と取れない。
+        advance = harvest.status != fetch.FAILED and not any(r.more for r in harvest.results)
+        new_state = State(seen=frozenset(written), last_run=at.date() if advance else state.last_run)
         try:
             save_state(args.state, new_state)
-            stages.append(f"台帳: {len(written)} 件を足した（前回の日付は {new_state.last_run}）")
-        except OSError as e:
+            stages.add(f"台帳: {len(written)} 件を足した（前回の日付は {new_state.last_run}）")
+        except (OSError, StateError) as e:
             ledger_failed = True
-            stages.append(f"台帳: 更新できなかった（{type(e).__name__}: {e}）")
-    else:
-        stages.append("台帳: 更新しなかった（Inbox に書けていないので、記事を「見た」にしない）")
+            stages.add(f"台帳: 更新できなかった（{type(e).__name__}: {e}）")
 
-    # ---- 通知
     health = notify.judge(harvest=harvest, digest=digest, audit=audit, emitted=emitted, emit_error=emit_error)
-    body = notify.compose(
-        at=at, run_id=run_id, health=health, stages=stages, emitted=emitted, emit_error=emit_error
-    )
-    print(line_auth.redact(body, *conn.secrets))
-    print("-" * 60)
+    return _Result(health=health, emitted=emitted, emit_error=emit_error, ledger_failed=ledger_failed)
 
-    sent = True
-    if args.no_notify:
-        print("--no-notify なので、LINE には送っていない")
-    else:
-        try:
-            delivered = notify.send(conn.session, to=conn.to, body=body, run_id=run_id, secrets=conn.secrets)
-            print(delivered.summary)
-        except (line_auth.LineError, line_send.SendError) as e:
-            sent = False
-            # 秘密は `notify.send` が投げる時点で伏せてある（push の失敗も通信の失敗も）。
-            print(f"LINE へ送れなかった: {e}", file=sys.stderr)
 
-    if health.level == notify.ABNORMAL or not sent or ledger_failed:
-        return EXIT_ABNORMAL
-    return EXIT_OK
+def fit_for_line(text: str, *, limit: int | None = None) -> str:
+    """LINE のテキストの上限に収める。**数え方は UTF-16 のコード単位**（公式・サロゲートペアは2字）。
+
+    いちばん通知が要る異常のときに限って本文が長くなる（読み戻しの問題を全部並べる）。
+    溢れて 400 で落ちるより、頭を残して切るほうがいい。**行の途中では切らない。**
+    """
+    limit = LINE_TEXT_LIMIT if limit is None else limit
+    if _utf16(text) <= limit:
+        return text
+    note = "\n…（ここから {} 字を省いた。全文は Inbox と実行画面にある）"
+    budget = limit - _utf16(note.format(len(text)))
+    kept: list[str] = []
+    used = 0
+    for ch in text:
+        used += _utf16(ch)
+        if used > budget:
+            break
+        kept.append(ch)
+    head = "".join(kept)
+    if "\n" in head:
+        head = head[: head.rfind("\n")]
+    return head + note.format(len(text) - len(head))
+
+
+def _utf16(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _say(text: str, stream: Any = None) -> None:
+    """画面に出す。**書けない字は置き換える**——タスクスケジューラで振り向けた出力は cp932 などになる。"""
+    out = sys.stdout if stream is None else stream
+    try:
+        print(text, file=out)
+    except UnicodeEncodeError:
+        encoding = getattr(out, "encoding", None) or "ascii"
+        print(text.encode(encoding, errors="replace").decode(encoding), file=out)
 
 
 def _fetch_line(harvest: fetch.Harvest) -> str:

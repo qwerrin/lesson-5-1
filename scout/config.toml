@@ -1,0 +1,35 @@
+# scout の設定。`cli.py` が**接続を開く前に**全部確かめる（知らない鍵も誤りにする）。
+#
+# 取得元ごとに `query` の意味が違う（DESIGN 4-1）——共通の抽象を被せると両方の説明が嘘になる。
+#   qiita … 検索式（`tag:` など）。期間は cli が `created:>=` を足す
+#   zenn  … トピックのスラッグ（zenn.dev/topics/<ここ>/feed）
+
+# 設定ファイルの場所から解決する。vault の 01_Inbox（このリポジトリは vault の 03_Work/dev/ にある）。
+# **クローンには無い**ので、その場合は `--inbox` で差し替える。
+inbox = "../../../../01_Inbox"
+
+# U4 で疎通を取ったモデル（`common/gemini_client.DEFAULT_MODEL` と同じ）。
+model = "gemini-3.5-flash-lite"
+
+# 要約してよい取得元。**本文が取れる Qiita だけ**（2-4：照合できないものは要約しない）。
+summarizable = ["qiita"]
+
+[profile]
+tags = ["ClaudeCode"]
+keywords = ["Claude Code"]
+mute_tags = []
+mute_keywords = []
+# 要約へ回す上限。`max_calls`（既定 10）より大きくすると設定の誤りになる。
+cap = 10
+
+[[sources]]
+name = "qiita"
+kind = "qiita"
+query = "tag:ClaudeCode"
+limit = 20
+
+[[sources]]
+name = "zenn"
+kind = "zenn"
+query = "claudecode"
+limit = 20

@@ -67,3 +67,7 @@ task3/meeting/*.mp3
 # 56ファイル・8MB が追跡対象のまま残っていた（2026-09-12 に実測）。
 # この上の service-account.json の欄と同じ形——パターンは意味ではなく名前で照合する。
 task3/meeting/_parts/
+
+# scout の台帳。**task1/state.json と同じ理由。** 追跡すると、クローンした人の手元で
+# 「もう見た」から始まり、まだ読んでいない記事を飛ばす。
+scout/state/

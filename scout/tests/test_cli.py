@@ -24,6 +24,7 @@ J            接続ごと差し込む。**このファイルのどのテスト�
 
 from __future__ import annotations
 
+import functools
 import json
 import socket
 import sys
@@ -143,9 +144,24 @@ def test_bad_config_is_refused(tmp_path: Path, old: str, new: str) -> None:
         cli.load_config(_config_file(tmp_path, CONFIG.replace(old, new)))
 
 
+def test_max_calls_below_the_cap_is_refused(tmp_path: Path) -> None:
+    """`summarize` は上限を超える件数を**呼ぶ前に**例外で止める。実行の途中で落ちると通知まで届かない。"""
+    text = CONFIG.replace('model = "gemini-test"', 'model = "gemini-test"\nmax_calls = 5')
+    with pytest.raises(cli.ConfigError):
+        cli.load_config(_config_file(tmp_path, text))
+
+
 def test_config_without_sources_is_refused(tmp_path: Path) -> None:
     text = CONFIG.split("[[sources]]")[0]
     with pytest.raises(cli.ConfigError):
+        cli.load_config(_config_file(tmp_path, text))
+
+
+def test_empty_sources_list_is_refused_for_the_right_reason(tmp_path: Path) -> None:
+    """`sources = []` は次の検査（summarizable が取得元に無い）でも止まる。
+    **例外の種類だけ見ると、どちらで止まったか区別できない**ので、文言まで見る。"""
+    text = CONFIG.split("[[sources]]")[0].replace("[profile]", "sources = []\n\n[profile]")
+    with pytest.raises(cli.ConfigError, match="sources"):
         cli.load_config(_config_file(tmp_path, text))
 
 
@@ -183,6 +199,15 @@ def test_state_round_trips_and_leaves_no_temporary_file(tmp_path: Path) -> None:
     cli.save_state(path, cli.State(seen=frozenset({"a", "b"}), last_run=date(2026, 9, 21)))
     assert cli.load_state(path) == cli.State(seen=frozenset({"a", "b"}), last_run=date(2026, 9, 21))
     assert [p.name for p in path.parent.iterdir()] == ["seen.json"]
+
+
+def test_failed_save_leaves_no_temporary_file(tmp_path: Path) -> None:
+    """**置き換えに失敗した回**に一時ファイルが残ると、次からその横で台帳を探すことになる。"""
+    path = tmp_path / "seen.json"
+    path.mkdir()  # 置き換え先がフォルダ＝書けるが置き換えられない
+    with pytest.raises(OSError):
+        cli.save_state(path, cli.State(seen=frozenset({"a"}), last_run=None))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["seen.json"]
 
 
 @pytest.mark.parametrize("text", ["{", "[]", '{"seen": "a"}', '{"seen": [], "last_run": "昨日"}'])
@@ -270,12 +295,16 @@ class _World:
         self,
         *,
         qiita: tuple[str, ...] = ("https://qiita.com/a/items/1",),
+        qiita_total: int | None = None,
         zenn_status: int = 200,
         summary: str = "Python の記事。",
         finish: str = "STOP",
         line_status: int = 200,
+        call_raises: BaseException | None = None,
     ) -> None:
         self.qiita = qiita
+        self.qiita_total = qiita_total
+        self.call_raises = call_raises
         self.zenn_status = zenn_status
         self.summary = summary
         self.finish = finish
@@ -288,13 +317,16 @@ class _World:
         self.urls.append(url)
         if "qiita.com" in url:
             payload = json.dumps(_qiita_items(*self.qiita), ensure_ascii=False)
-            return fetch.Response(status=200, text=payload, headers={"Total-Count": str(len(self.qiita))})
+            total = len(self.qiita) if self.qiita_total is None else self.qiita_total
+            return fetch.Response(status=200, text=payload, headers={"Total-Count": str(total)})
         if "zenn.dev" in url:
             return fetch.Response(status=self.zenn_status, text=ZENN_FEED, headers={})
         raise AssertionError(url)
 
     def call(self, prompt: str) -> Reply:
         self.prompts.append(prompt)
+        if self.call_raises is not None:
+            raise self.call_raises
         text = json.dumps({"summary": self.summary, "quotes": []}, ensure_ascii=False)
         return Reply(text=text, finish_reason=self.finish, prompt_tokens=10, output_tokens=5)
 
@@ -369,6 +401,7 @@ def test_second_run_drops_what_was_seen_and_still_notifies(tmp_path: Path) -> No
     assert len(world.prompts) == 1  # 2回目は要約しない
     assert len(world.line.bodies) == 2  # **0件でも送る**
     assert "記事 0 件" in _note(tmp_path)
+    assert len(_state(tmp_path).seen) == 2  # 前の回のぶんを捨てない
 
 
 def test_clock_is_read_once_and_the_same_time_is_used_everywhere(tmp_path: Path) -> None:
@@ -537,7 +570,9 @@ def test_line_failure_exits_one_but_the_ledger_is_saved(tmp_path: Path, capsys: 
 
 
 def test_ledger_save_failure_exits_one_and_is_in_the_notification(tmp_path: Path) -> None:
-    (tmp_path / "state" / "seen.json").mkdir(parents=True)  # ファイルの場所がフォルダ
+    # 台帳の**親がファイル**。読むときは「まだ無い」で、書くときに初めて失敗する。
+    # （台帳そのものをフォルダにすると、読む段階で止まって保存の失敗まで届かない）
+    (tmp_path / "state").write_text("", encoding="utf-8")
     world = _World()
     code = _main(tmp_path, world)
     assert code == 1
@@ -545,10 +580,185 @@ def test_ledger_save_failure_exits_one_and_is_in_the_notification(tmp_path: Path
 
 
 def test_secrets_never_reach_the_screen(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    _main(tmp_path, _World(), "--no-notify")
+    """取得の例外の文言は本文に入る。**そこに鍵が混ざっても画面に出さない。**"""
+    world = _World()
+    original = world.get
+
+    def leaky(url: str) -> fetch.Response:
+        if "zenn.dev" in url:
+            raise RuntimeError(f"proxy said {GEMINI_KEY} / {TOKEN}")
+        return original(url)
+
+    world.get = leaky  # type: ignore[method-assign]
+    _main(tmp_path, world, "--no-notify")
     captured = capsys.readouterr()
+    assert "RuntimeError" in captured.out  # 経路は通っている
     for secret in (TOKEN, GEMINI_KEY):
         assert secret not in captured.out + captured.err
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-03 のレビューで見つかった穴
+# ---------------------------------------------------------------------------
+
+
+def test_trial_inbox_does_not_touch_the_real_ledger(tmp_path: Path) -> None:
+    """**試しの場所に書いた記事を「見た」にすると、本番の Inbox に二度と来ない。**"""
+    other = tmp_path / "scratch"
+    other.mkdir()
+    world = _World()
+    assert _main(tmp_path, world, "--inbox", str(other)) == 0
+    assert not (tmp_path / "state" / "seen.json").exists()
+    assert "台帳" in world.line.bodies[0] and "--inbox" in world.line.bodies[0]
+
+
+def test_truncated_source_does_not_advance_the_date(tmp_path: Path) -> None:
+    """**まだ先がある回に日付を進めると、残りは二度と取れない**（期間は日付まで）。"""
+    cli.save_state(tmp_path / "state" / "seen.json", cli.State(seen=frozenset(), last_run=date(2026, 9, 21)))
+    world = _World(qiita_total=57)
+    assert _main(tmp_path, world, since=None) == 0  # 取りこぼしは「注意」
+    assert _state(tmp_path).last_run == date(2026, 9, 21)
+    assert _state(tmp_path).seen  # 書いた記事は「見た」にする
+
+
+def test_unexpected_exception_still_sends_an_abnormal_notice(tmp_path: Path) -> None:
+    """**想定外の例外でも無音にしない**（M7）。`summarize` が握らない例外が途中で抜けた。"""
+    world = _World(call_raises=TimeoutError("read timed out"))
+    code = _main(tmp_path, world)
+    assert code == 1
+    assert len(world.line.bodies) == 1
+    assert world.line.bodies[0].startswith("【scout】異常｜")
+    assert "TimeoutError" in world.line.bodies[0]
+    assert not (tmp_path / "state" / "seen.json").exists()
+
+
+def test_missing_env_file_is_a_config_error(tmp_path: Path) -> None:
+    _config_file(tmp_path)
+    connect = functools.partial(cli.connect_real, env_path=tmp_path / "missing.env")
+    argv = ["--config", str(tmp_path / "config.toml"), "--state", str(tmp_path / "s.json"), "--since", "2026-09-21"]
+    assert cli.main(argv, connect=connect, now=_Clock()) == 2
+
+
+def test_connect_real_without_remote_reads_no_keys(tmp_path: Path) -> None:
+    config = cli.load_config(_config_file(tmp_path))
+    conn = cli.connect_real(config, remote=False, env_path=tmp_path / "missing.env")
+    assert conn.get is cli.http_get
+    assert conn.call is None and conn.session is None and conn.secrets == ()
+
+
+def test_connect_real_builds_timeout_session_and_lists_both_secrets(tmp_path: Path) -> None:
+    config = cli.load_config(_config_file(tmp_path))
+    env = tmp_path / ".env"
+    env.write_text(
+        f"GEMINI_API_KEY={GEMINI_KEY}\nLINE_CHANNEL_ACCESS_TOKEN={TOKEN}\nLINE_USER_ID={TO}\n", encoding="utf-8"
+    )
+    conn = cli.connect_real(config, remote=True, env_path=env)
+    assert isinstance(conn.session, cli.TimeoutSession)
+    assert conn.to == TO
+    assert set(conn.secrets) == {TOKEN, GEMINI_KEY}
+
+
+def test_secrets_never_reach_the_inbox_note(tmp_path: Path) -> None:
+    """vault は git で追跡している。**ノートに入った鍵はコミットされる。**"""
+    world = _World()
+    original = world.get
+
+    def leaky(url: str) -> fetch.Response:
+        if "zenn.dev" in url:
+            raise RuntimeError(f"proxy said {GEMINI_KEY} / {TOKEN}")
+        return original(url)
+
+    world.get = leaky  # type: ignore[method-assign]
+    _main(tmp_path, world)
+    note = _note(tmp_path)
+    assert "RuntimeError" in note
+    assert GEMINI_KEY not in note and TOKEN not in note
+
+
+class _AsciiOut:
+    """タスクスケジューラで出力を振り向けたときの、**日本語を書けない標準出力**。"""
+
+    encoding = "ascii"
+
+    def write(self, text: str) -> int:
+        text.encode("ascii")  # 書けない字があれば UnicodeEncodeError
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+def test_screen_that_cannot_print_japanese_does_not_stop_the_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "stdout", _AsciiOut())
+    world = _World()
+    assert _main(tmp_path, world) == 0
+    assert len(world.line.bodies) == 1
+
+
+def test_query_url_is_recognised_as_seen_on_the_next_run(tmp_path: Path) -> None:
+    """`dedupe.normalize` は**2回かけると変わる** URL がある（`%26`）。台帳には元の URL を残す。"""
+    world = _World(qiita=("https://qiita.com/a/items/1?q=a%26b",))
+    _main(tmp_path, world)
+    cli.main(
+        ["--config", str(tmp_path / "config.toml"), "--state", str(tmp_path / "state" / "seen.json")],
+        connect=world.connect,
+        now=lambda: datetime(2026, 9, 22, 23, 0, 0),
+    )
+    assert len(world.prompts) == 1
+
+
+def test_save_merges_with_what_another_run_wrote(tmp_path: Path) -> None:
+    """**読んだ後に他の実行が書いた分を消さない**（教訓 `read-modify-write-drops-concurrent-edits`）。"""
+    path = tmp_path / "seen.json"
+    cli.save_state(path, cli.State(seen=frozenset({"a"}), last_run=date(2026, 9, 21)))
+    cli.save_state(path, cli.State(seen=frozenset({"b"}), last_run=date(2026, 9, 22)))
+    assert cli.load_state(path) == cli.State(seen=frozenset({"a", "b"}), last_run=date(2026, 9, 22))
+
+
+def test_qiita_limit_above_the_page_maximum_is_refused(tmp_path: Path) -> None:
+    """`fetch` は 100 を超える件数を**黙って** 100 に丸める（Qiita の per_page の上限）。"""
+    text = CONFIG.replace("limit = 20\n\n[[sources]]", "limit = 101\n\n[[sources]]")
+    with pytest.raises(cli.ConfigError, match="100"):
+        cli.load_config(_config_file(tmp_path, text))
+
+
+def test_since_in_the_future_is_refused(tmp_path: Path) -> None:
+    """未来の日付だと、毎回0件で「正常」になる。"""
+    world = _World()
+    assert _main(tmp_path, world, since="2026-09-23") == 2
+    assert world.connects == []
+
+
+def test_config_and_ledger_with_bom_are_readable(tmp_path: Path) -> None:
+    """PowerShell 5 の `Set-Content -Encoding UTF8` は BOM を付ける。"""
+    path = _config_file(tmp_path)
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    assert cli.load_config(path).sources
+    state = tmp_path / "seen.json"
+    state.write_bytes(b"\xef\xbb\xbf" + b'{"seen": ["a"], "last_run": null}')
+    assert cli.load_state(state).seen == frozenset({"a"})
+
+
+def test_body_is_cut_to_the_line_limit_in_utf16_units() -> None:
+    """公式: テキストは**最大5000字**、数え方は **UTF-16 のコード単位**（サロゲートペアは2字）。"""
+    body = "【scout】異常\n" + "\n".join(f"・URL が無い: https://qiita.com/x/items/{i}" for i in range(400))
+    cut = cli.fit_for_line(body)
+    assert len(cut.encode("utf-16-le")) // 2 <= cli.LINE_TEXT_LIMIT
+    assert cut.startswith("【scout】異常\n")
+    assert "省いた" in cut
+
+
+def test_body_cut_does_not_split_a_surrogate_pair() -> None:
+    body = "𠮷" * 3000  # 1字が UTF-16 で2単位
+    cut = cli.fit_for_line(body)
+    cut.encode("utf-16-le")  # 片割れが残っていれば例外
+    assert len(cut.encode("utf-16-le")) // 2 <= cli.LINE_TEXT_LIMIT
+
+
+def test_short_body_is_left_as_is() -> None:
+    assert cli.fit_for_line("短い") == "短い"
 
 
 # ---------------------------------------------------------------------------

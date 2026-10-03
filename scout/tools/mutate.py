@@ -56,6 +56,7 @@ SUMMARIZE = "scout/summarize.py"
 VERIFY = "scout/verify_source.py"
 EMIT = "scout/emit.py"
 NOTIFY = "scout/notify.py"
+CLI = "scout/cli.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -1960,6 +1961,272 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "送ってあったと送ったを取り違える",
         "            if self.duplicate\n",
         "            if not self.duplicate\n",
+    ),
+    # ================================================================ cli
+    # 狙うのは **「外へ出てから設定の誤りに気づく」「台帳が嘘をつく」「失敗が無音になる」**。
+    # ---------------------------------------------------------------- 設定
+    (
+        CLI,
+        "**知らない鍵を黙って捨てる**",
+        "    if unknown:\n        raise ConfigError",
+        "    if False:\n        raise ConfigError",
+    ),
+    (
+        CLI,
+        "summarizable が空でも通す",
+        "    if not summarizable:\n",
+        "    if False:\n",
+    ),
+    (
+        CLI,
+        "**summarizable に取得元に無い名前があっても通す**",
+        "    if not summarizable <= names:",
+        "    if False:",
+    ),
+    (
+        CLI,
+        "model が空でも通す",
+        "    if not isinstance(model, str) or not model.strip():",
+        "    if False:",
+    ),
+    (
+        CLI,
+        "**Inbox が無くても通す**",
+        "    if not where.is_dir():",
+        "    if False:",
+    ),
+    (
+        CLI,
+        "--inbox の差し替えを無視する",
+        "    where = inbox if inbox is not None else _relative(path, data.get(\"inbox\"))",
+        "    where = _relative(path, data.get(\"inbox\"))",
+    ),
+    (
+        CLI,
+        "Inbox を実行した場所から解決する",
+        "(config_path.parent / raw).resolve()",
+        "raw.resolve()",
+    ),
+    (
+        CLI,
+        "**max_calls が cap より小さくても通す**（途中で落ちて通知が届かない）",
+        "    if max_calls < profile.cap:",
+        "    if False:",
+    ),
+    (
+        CLI,
+        "取得元が0件でも通す",
+        "    if not isinstance(value, list) or not value:\n        raise ConfigError(\"[[sources]]",
+        "    if not isinstance(value, list):\n        raise ConfigError(\"[[sources]]",
+    ),
+    (
+        CLI,
+        "知らない種類の取得元を通す",
+        "        if kind not in _KINDS:",
+        "        if False:",
+    ),
+    (
+        CLI,
+        "取得元の名前の重複を通す",
+        "    if len(set(names)) != len(names):",
+        "    if False:",
+    ),
+    (
+        CLI,
+        "一覧でない値を通す",
+        "    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):",
+        "    if not isinstance(value, (list, str)):",
+    ),
+    (
+        CLI,
+        "空の文字列を通す",
+        "    if not isinstance(value, str) or not value.strip():\n        raise ConfigError(f\"{where} が空\")",
+        "    if not isinstance(value, str):\n        raise ConfigError(f\"{where} が空\")",
+    ),
+    (
+        CLI,
+        "**bool を正の整数として通す**",
+        "    if isinstance(value, bool) or not isinstance(value, int) or value < 1:",
+        "    if not isinstance(value, int) or value < 1:",
+    ),
+    (
+        CLI,
+        "0 を正の整数として通す",
+        "    if isinstance(value, bool) or not isinstance(value, int) or value < 1:",
+        "    if isinstance(value, bool) or not isinstance(value, int) or value < 0:",
+    ),
+    (
+        CLI,
+        "壊れた TOML を素の例外で出す",
+        "    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:",
+        "    except (OSError, UnicodeDecodeError) as e:",
+    ),
+    # ---------------------------------------------------------------- 台帳
+    (
+        CLI,
+        "**壊れた台帳を空として続ける**（見た記事を全部もう一度送る）",
+        "        raise StateError(f\"台帳を読めない（{path}）: {e}\") from e",
+        "        return State(seen=frozenset(), last_run=None)",
+    ),
+    (
+        CLI,
+        "台帳の seen の形を見ない",
+        "    if not isinstance(seen, list) or not all(isinstance(k, str) for k in seen):",
+        "    if False:",
+    ),
+    (
+        CLI,
+        "台帳が表でなくても通す",
+        "    if not isinstance(data, dict):\n        raise StateError",
+        "    if False:\n        raise StateError",
+    ),
+    (
+        CLI,
+        "**一時ファイルを残す**",
+        "        if temporary.exists():\n            temporary.unlink()",
+        "        if False:\n            temporary.unlink()",
+    ),
+    # ---------------------------------------------------------------- 外へ出る前に止める
+    (
+        CLI,
+        "**初回に --since が無くても進む**",
+        "    if since is None:\n        print(",
+        "    if False:\n        print(",
+    ),
+    (
+        CLI,
+        "**--since より台帳を優先する**",
+        "        since = date.fromisoformat(args.since) if args.since is not None else state.last_run",
+        "        since = state.last_run or date.fromisoformat(args.since)",
+    ),
+    (
+        CLI,
+        "**時刻を2回取る**（送り直しで時刻が変わり2通になる）",
+        '    run_id = f"{at:%Y%m%d-%H%M%S}"',
+        '    run_id = f"{now():%Y%m%d-%H%M%S}"',
+    ),
+    (
+        CLI,
+        "**--dry-run でも鍵を読んで接続する**",
+        "(config, remote=not args.dry_run)",
+        "(config, remote=True)",
+    ),
+    (
+        CLI,
+        "**--dry-run でも先へ進む**",
+        "    if args.dry_run:\n        print(",
+        "    if False:\n        print(",
+    ),
+    # ---------------------------------------------------------------- 台帳を進める条件
+    (
+        CLI,
+        "**書けなかった回も記事を「見た」にする**（M4）",
+        "    if emitted is not None and emitted.ok:",
+        "    if True:",
+    ),
+    (
+        CLI,
+        "**読み戻しに問題があっても「見た」にする**",
+        "    if emitted is not None and emitted.ok:",
+        "    if emitted is not None:",
+    ),
+    (
+        CLI,
+        "**取れなかった取得元がある回も日付を進める**（その日を飛ばす）",
+        "        advance = harvest.status != fetch.FAILED",
+        "        advance = True",
+    ),
+    (
+        CLI,
+        "見出しだけの記事を「見た」にしない",
+        " | {h.kept.key for h in parts.headline}",
+        "",
+    ),
+    (
+        CLI,
+        "台帳を前の分を捨てて書く",
+        "        new_state = State(seen=state.seen | written,",
+        "        new_state = State(seen=frozenset(written),",
+    ),
+    (
+        CLI,
+        "**台帳の保存の失敗を黙る**",
+        "            ledger_failed = True\n",
+        "",
+    ),
+    # ---------------------------------------------------------------- 通知・終了コード
+    (
+        CLI,
+        "**emit の例外で通知まで届かない**",
+        "    except (ValueError, OSError) as e:\n        # **書けなかった回も送る。**",
+        "    except ZeroDivisionError as e:\n        # **書けなかった回も送る。**",
+    ),
+    (
+        CLI,
+        "**画面に出す本文の秘密を伏せない**",
+        "    print(line_auth.redact(body, *conn.secrets))",
+        "    print(body)",
+    ),
+    (
+        CLI,
+        "**--no-notify でも送る**",
+        "    if args.no_notify:",
+        "    if False:",
+    ),
+    (
+        CLI,
+        "**LINE に送れなかったのに 0 で終わる**",
+        "            sent = False\n",
+        "",
+    ),
+    (
+        CLI,
+        "**異常でも 0 で終わる**",
+        "    if health.level == notify.ABNORMAL or not sent or ledger_failed:",
+        "    if not sent or ledger_failed:",
+    ),
+    (
+        CLI,
+        "**注意でも 1 で終わる**（毎日赤くなる）",
+        "    if health.level == notify.ABNORMAL or not sent or ledger_failed:",
+        "    if health.level != notify.NORMAL or not sent or ledger_failed:",
+    ),
+    # ---------------------------------------------------------------- 本物の接続の部品
+    (
+        CLI,
+        "**timeout を足さない**",
+        "    def get(self, url: str, **kwargs: Any) -> Any:\n        kwargs.setdefault(\"timeout\", self._timeout)",
+        "    def get(self, url: str, **kwargs: Any) -> Any:\n        pass",
+    ),
+    (
+        CLI,
+        "post に timeout を足さない",
+        "    def post(self, url: str, **kwargs: Any) -> Any:\n        kwargs.setdefault(\"timeout\", self._timeout)",
+        "    def post(self, url: str, **kwargs: Any) -> Any:\n        pass",
+    ),
+    (
+        CLI,
+        "明示した timeout を上書きする",
+        "    def get(self, url: str, **kwargs: Any) -> Any:\n        kwargs.setdefault(\"timeout\", self._timeout)",
+        "    def get(self, url: str, **kwargs: Any) -> Any:\n        kwargs[\"timeout\"] = self._timeout",
+    ),
+    (
+        CLI,
+        "**取得に timeout を付けない**",
+        "    reply = requests.get(url, timeout=TIMEOUT, headers=",
+        "    reply = requests.get(url, headers=",
+    ),
+    (
+        CLI,
+        "要約の型を渡さない",
+        "client, prompt=prompt, schema=summarize.SCHEMA, model=model, api_key=api_key",
+        "client, prompt=prompt, schema=None, model=model, api_key=api_key",
+    ),
+    (
+        CLI,
+        "設定のモデルを使わない",
+        "client, prompt=prompt, schema=summarize.SCHEMA, model=model, api_key=api_key",
+        "client, prompt=prompt, schema=summarize.SCHEMA, api_key=api_key",
     ),
 ]
 

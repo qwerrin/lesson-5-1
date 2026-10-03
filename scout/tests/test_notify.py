@@ -88,12 +88,14 @@ def _summary(url: str = "https://qiita.com/x/items/1") -> summarize.Summary:
     return summarize.Summary(scored=_scored(url), text="要約", quotes=(), prompt_tokens=1, output_tokens=1)
 
 
-def _digest(*, failed: int = 0) -> summarize.Digest:
+def _digest(*, failed: int = 0, audit: verify_source.Audit | None = None) -> summarize.Digest:
+    """**照合した要約と同じものを `done` に置く。** ずれた組は、それ自体が異常になる。"""
     failures = tuple(
         summarize.Failure(scored=_scored(f"https://qiita.com/f/items/{i}"), reason=summarize.NOT_FINISHED, detail="")
         for i in range(failed)
     )
-    return summarize.Digest(done=(), failed=failures)
+    done = tuple(c.summary for c in audit.checks) if audit else ()
+    return summarize.Digest(done=done, failed=failures)
 
 
 def _audit(*verdicts: str) -> verify_source.Audit:
@@ -118,6 +120,8 @@ def _judge(**kwargs: object) -> notify.Health:
         "emit_error": None,
     }
     args.update(kwargs)
+    if "audit" in kwargs and "digest" not in kwargs:
+        args["digest"] = _digest(audit=kwargs["audit"])  # type: ignore[arg-type]
     return notify.judge(**args)  # type: ignore[arg-type]
 
 
@@ -178,7 +182,8 @@ def test_truncated_source_needs_attention() -> None:
 
 
 def test_abnormal_wins_over_attention_and_both_reasons_are_kept() -> None:
-    health = _judge(digest=_digest(failed=1), audit=_audit(verify_source.MISMATCH))
+    audit = _audit(verify_source.MISMATCH)
+    health = _judge(digest=_digest(failed=1, audit=audit), audit=audit)
     assert health.level == notify.ABNORMAL
     assert len(health.reasons) == 2
 

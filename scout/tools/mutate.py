@@ -1831,14 +1831,20 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         NOTIFY,
         "**再送キーに本文を混ぜない**（同じキーで中身を変える）",
-        'f"{run_id}\\n{body}"',
-        "run_id",
+        "json.dumps([run_id, body], ensure_ascii=False)",
+        "json.dumps([run_id], ensure_ascii=False)",
     ),
     (
         NOTIFY,
-        "再送キーの区切りを外す",
-        'f"{run_id}\\n{body}"',
-        'f"{run_id}{body}"',
+        "再送キーの区切りを外す（`r1`+`2本文` と `r12`+`本文` がぶつかる）",
+        "json.dumps([run_id, body], ensure_ascii=False)",
+        "run_id + body",
+    ),
+    (
+        NOTIFY,
+        "再送キーを改行で区切る（改行を含む run-id でぶつかる）",
+        "json.dumps([run_id, body], ensure_ascii=False)",
+        'run_id + chr(10) + body',
     ),
     (
         NOTIFY,
@@ -1856,8 +1862,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         NOTIFY,
         "**通数が読めないと送らない**（無音になる）",
-        "    except (line_send.SendError, line_auth.LineError):\n        return None",
-        "    except (line_send.SendError, line_auth.LineError):\n        raise",
+        "        return None\n\n\ndef _header",
+        "        raise\n\n\ndef _header",
     ),
     (
         NOTIFY,
@@ -1912,6 +1918,42 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "**読めなかった通数を 0 にする**",
         '    return "読めず" if value is None else str(value)',
         '    return "0" if value is None else str(value)',
+    ),
+    (
+        NOTIFY,
+        "**知らない状態を正常に倒す**",
+        "        elif result.status not in (OK, EMPTY):",
+        "        elif False:",
+    ),
+    (
+        NOTIFY,
+        "**照合が要約を覆っていなくても見ない**",
+        "    if len(audit.checks) != len(digest.done):",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "**本文の鍵を伏せずに送る**",
+        "    body = line_auth.redact(body, *secrets)\n",
+        "",
+    ),
+    (
+        NOTIFY,
+        "**push の通信例外を素のまま出す**（呼び出し側は LineError だけを待っている）",
+        "    except requests.RequestException as e:\n        # 応答が返らない失敗。",
+        "    except ZeroDivisionError as e:\n        # 応答が返らない失敗。",
+    ),
+    (
+        NOTIFY,
+        "push の通信例外の文言を伏せない",
+        '            line_auth.redact(f"LINE へ送れなかった（通信）: {type(e).__name__}: {e}", *secrets)',
+        '            f"LINE へ送れなかった（通信）: {type(e).__name__}: {e}"',
+    ),
+    (
+        NOTIFY,
+        "**通数の取得で通信例外を握らない**（送らないまま／送ったのに失敗で終わる）",
+        "    except (line_send.SendError, line_auth.LineError, requests.RequestException):",
+        "    except (line_send.SendError, line_auth.LineError):",
     ),
     (
         NOTIFY,

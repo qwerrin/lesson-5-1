@@ -1109,8 +1109,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         VERIFY,
         "語の前の英字を見ない（`Script` が `JavaScript` に当たる）",
-        r'rf"(?<![A-Za-z0-9_]){re.escape(target)}',
-        r'rf"{re.escape(target)}',
+        r'rf"(?<![A-Za-z0-9_]){word}',
+        r'rf"{word}',
     ),
     (
         VERIFY,
@@ -1133,13 +1133,13 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         VERIFY,
         "長い語も大小を見る",
-        "    flags = 0 if len(target) <= SHORT_WORD else re.IGNORECASE",
+        "    flags = 0 if short else re.IGNORECASE",
         "    flags = 0",
     ),
     (
         VERIFY,
         "**短い語の大小を見ない**（`Go` が英文の `go` で裏付けられる）",
-        "    flags = 0 if len(target) <= SHORT_WORD else re.IGNORECASE",
+        "    flags = 0 if short else re.IGNORECASE",
         "    flags = re.IGNORECASE",
     ),
     (
@@ -1153,6 +1153,79 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "4字の語まで大小を見る",
         "SHORT_WORD = 3",
         "SHORT_WORD = 4",
+    ),
+    # ---------------------------------------------------------------- 大文字の継ぎ目（U21）
+    (
+        VERIFY,
+        "**継ぎ目に空白を許さない**（`VSCode` が本文の `VS Code` で外れる）",
+        r'            parts.append("[ \t]?")',
+        "            pass",
+    ),
+    (
+        VERIFY,
+        "継ぎ目の空白を何字でも許す",
+        r'            parts.append("[ \t]?")',
+        r'            parts.append("[ \t]*")',
+    ),
+    (
+        VERIFY,
+        "**継ぎ目で改行をまたぐ**（行末の語と次の行の頭が組む）",
+        r'            parts.append("[ \t]?")',
+        r'            parts.append("\s?")',
+    ),
+    (
+        VERIFY,
+        "**短い語にも継ぎ目を許す**（`AIs` が英文の `A Is` で裏付けられる）",
+        "    word = re.escape(target) if short else _seams(target)",
+        "    word = _seams(target)",
+    ),
+    (
+        VERIFY,
+        "**頭字語の後ろの小文字1字でも継ぎ目にする**（`APIs` が `AP Is` で裏付けられる）",
+        "    return len(chars) == 2 and all(_lower(ch) for ch in chars)",
+        "    return all(_lower(ch) for ch in chars)",
+    ),
+    (
+        VERIFY,
+        "頭字語の最後を継ぎ目にしない（小文字2字を見られない）",
+        "    return len(chars) == 2 and all(_lower(ch) for ch in chars)",
+        "    return len(chars) == 3 and all(_lower(ch) for ch in chars)",
+    ),
+    (
+        VERIFY,
+        "**大文字でない字の前も継ぎ目にする**（`Pyth on` を `Python` にする）",
+        "        if _upper(ch) and (_lower(before) or (_upper(before) and _two_lower(word[i + 1 : i + 3]))):",
+        "        if _lower(before) or (_upper(before) and _two_lower(word[i + 1 : i + 3])):",
+    ),
+    (
+        VERIFY,
+        "**頭字語の中も継ぎ目にする**（`V SCode` を `VSCode` にする）",
+        "        if _upper(ch) and (_lower(before) or (_upper(before) and _two_lower(word[i + 1 : i + 3]))):",
+        "        if _upper(ch) and (_lower(before) or _upper(before)):",
+    ),
+    (
+        VERIFY,
+        "小文字の後ろを継ぎ目にしない（`Claude Code` が外れる）",
+        "        if _upper(ch) and (_lower(before) or (_upper(before) and _two_lower(word[i + 1 : i + 3]))):",
+        "        if _upper(ch) and _upper(before) and _two_lower(word[i + 1 : i + 3]):",
+    ),
+    (
+        VERIFY,
+        "頭字語の最後を継ぎ目にしない（`VS Code` が外れる）",
+        "        if _upper(ch) and (_lower(before) or (_upper(before) and _two_lower(word[i + 1 : i + 3]))):",
+        "        if _upper(ch) and _lower(before):",
+    ),
+    (
+        VERIFY,
+        "**大文字の前ならどこでも継ぎ目にする**（記号の後ろ・頭字語の中で切れる）",
+        "        if _upper(ch) and (_lower(before) or (_upper(before) and _two_lower(word[i + 1 : i + 3]))):",
+        "        if _upper(ch):",
+    ),
+    (
+        VERIFY,
+        "継ぎ目を要約の大文字から決めない（`VSCode` が `Vscode` 扱いになって外れる）",
+        "    word = re.escape(target) if short else _seams(target)",
+        "    word = re.escape(target) if short else _seams(target.title())",
     ),
     # ---------------------------------------------------------------- 本文の書式
     (

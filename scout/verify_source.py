@@ -187,11 +187,45 @@ def present(claim: str, body: str) -> bool:
                 # `250ドル` は本文の `$250` でも裏付ける。**後ろに英字が続けば別の額**（`$250M`）。
                 pattern = rf"(?:{pattern}|{re.escape(sign)}[ \t]*{bare}(?![A-Za-z]))"
         return re.search(pattern, text) is not None
+    # **短い語は大小を区別し、継ぎ目も許さない。** `Go`・`IF`・`AI` は、小文字だと普通の英単語や
+    # コードになる。`AIs` は `A Is` で切れる（2026-10-04 のレビュー）。
+    short = len(target) <= SHORT_WORD
+    word = re.escape(target) if short else _seams(target)
     # 前後に英数字が無い。`C` を `C++` に、`Node` を `Node.js` に当てない。
-    pattern = rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_+#])(?![.\-][A-Za-z0-9])"
-    # **短い語は大小を区別する。** `Go`・`IF`・`AI` は、小文字だと普通の英単語やコードになる。
-    flags = 0 if len(target) <= SHORT_WORD else re.IGNORECASE
+    pattern = rf"(?<![A-Za-z0-9_]){word}(?![A-Za-z0-9_+#])(?![.\-][A-Za-z0-9])"
+    flags = 0 if short else re.IGNORECASE
     return re.search(pattern, text, flags=flags) is not None
+
+
+def _seams(word: str) -> str:
+    """語の**大文字の継ぎ目**にだけ、空白1字を許す正規表現。
+
+    要約器は本文の `VS Code` を `VSCode` と書く（2026-10-04 の実物・U21）。継ぎ目が分かるのは
+    *要約側の大文字*だけなので、そこ以外（`Pyth on`・記号の前後・改行・2字以上の空白）は詰めない。
+
+    継ぎ目は、大文字の前が**小文字**（`Claude|Code`）か、大文字の並びの最後で
+    **後ろに小文字が2字以上続く**（`VS|Code`）ところ。頭字語の中（`V|S`）と、
+    頭字語の複数形（`AP|Is`）は継ぎ目にしない。数字の後ろは、実物が出るまで継ぎ目にしない。
+    """
+    parts = [re.escape(word[0])]
+    for i in range(1, len(word)):
+        before, ch = word[i - 1], word[i]
+        if _upper(ch) and (_lower(before) or (_upper(before) and _two_lower(word[i + 1 : i + 3]))):
+            parts.append("[ \t]?")
+        parts.append(re.escape(ch))
+    return "".join(parts)
+
+
+def _two_lower(chars: str) -> bool:
+    return len(chars) == 2 and all(_lower(ch) for ch in chars)
+
+
+def _upper(ch: str) -> bool:
+    return "A" <= ch <= "Z"
+
+
+def _lower(ch: str) -> bool:
+    return "a" <= ch <= "z"
 
 
 def verify(summaries: Sequence[Summary]) -> Audit:

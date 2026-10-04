@@ -303,6 +303,78 @@ def test_長い語は大小を問わない() -> None:
     assert verify_source.present("Rust", "rust で書いた")
 
 
+def test_本文が大文字の継ぎ目に空白を挟んでいても見つける() -> None:
+    """**U21：要約器は本文の `VS Code` を `VSCode` と書く**（2026-10-04 22:00 の実物）。
+
+    本文に `VS Code` が20回あったのに「本文に無い主張」になった。*要約は正しかった。*
+    """
+    assert verify_source.present("VSCode", "VS Code の設定")
+    assert verify_source.present("ClaudeCode", "Claude Code を使う")
+
+
+def test_空白を挟むのは大文字の前だけ() -> None:
+    """**継ぎ目でない場所の空白は別の語。** `Pyth on` を `Python` にしない。"""
+    assert not verify_source.present("Python", "Pyth on")
+    assert not verify_source.present("VSCode", "V SCode")
+
+
+def test_空白を挟む継ぎ目は要約の書き方で決める() -> None:
+    """**継ぎ目が分かるのは要約側の大文字だけ。** 小文字で書かれた主張は詰めない。"""
+    assert not verify_source.present("vscode", "VS Code の設定")
+
+
+def test_空白を挟んでも語の境界は守る() -> None:
+    assert not verify_source.present("VSCode", "VS Codes の話")
+    assert not verify_source.present("VSCode", "XVS Code の話")
+
+
+def test_挟む空白は1字だけ() -> None:
+    assert not verify_source.present("VSCode", "VS  Code")
+
+
+def test_空白を挟む語は行をまたがない() -> None:
+    """行末の語と次の行の頭の語が組んで、**本文に無い語が生まれる。**"""
+    assert not verify_source.present("VSCode", "VS\nCode")
+
+
+def test_離れた場所の断片では裏付けない() -> None:
+    assert not verify_source.present("VSCode", "VS の設定と Code の話")
+
+
+def test_頭字語の中は空白を挟んで裏付けない() -> None:
+    """`A I` や `A B テスト` の字の並びは、どの本文にもある。**大文字が続く間は継ぎ目にしない。**"""
+    assert not verify_source.present("AI", "A I")
+    assert not verify_source.present("ABC", "A B C")
+
+
+def test_短い語は継ぎ目で裏付けない() -> None:
+    """**`AIs` が英文の見出し `A Is` で裏付けられた**（2026-10-04 のレビュー）。
+
+    全部大文字の短い語は頭字語の規則で切れないが、*小文字が混ざると切れる*。
+    短い語は大小を区別するほど誤爆しやすいので、継ぎ目も許さない。
+    """
+    assert not verify_source.present("AIs", "Why A Is Better")
+    assert not verify_source.present("IoT", "Io T")
+
+
+def test_頭字語の複数形は継ぎ目で切らない() -> None:
+    """`APIs` を `AP Is` で裏付けない。**頭字語の最後の継ぎ目は、後ろに小文字が2字以上続くときだけ。**"""
+    assert not verify_source.present("APIs", "AP Is")
+    assert not verify_source.present("URLs", "UR Ls")
+    assert verify_source.present("VSCode", "VS Code")
+
+
+def test_全角の空白も継ぎ目の空白として扱う() -> None:
+    """NFKC で半角の空白になる。日本語の本文には全角の空白が混ざる。"""
+    assert verify_source.present("VSCode", "VS　Code")
+
+
+def test_記号の前後には空白を挟まない() -> None:
+    """記号は継ぎ目ではない。`Node. Js` は文の切れ目で、`Node.Js` ではない。"""
+    assert not verify_source.present("Node.Js", "Node. Js")
+    assert not verify_source.present("Node.Js", "Node .Js")
+
+
 def test_下付き文字も数にしない() -> None:
     """`CO₂` を `CO2` にしない。**語に本文に無い数字が混ざる。**"""
     assert verify_source.claims("CO₂ を 30% 削減") == ("CO", "30%")
@@ -528,6 +600,16 @@ def test_実データで漏れた罠を捕まえる() -> None:
 
     assert got.verdict == verify_source.MISMATCH
     assert got.missing == ("2倍",)
+
+
+def test_実データの誤報_本文の空白を挟んだ製品名() -> None:
+    """**U21：2026-10-04 22:00 の本番で1件だけ出た誤報。** 本文を開くと要約は正しかった。"""
+    check = _one(
+        "VSCode環境においてClaude Codeを導入する。",
+        "VS Code に Claude Code の拡張を入れる。VS Code を開く。",
+    )
+    assert check.verdict == verify_source.CONFIRMED
+    assert check.missing == ()
 
 
 def test_弱い数は見つかっても見つからなくても数えない() -> None:

@@ -97,12 +97,20 @@ UNITS = (
 #: いまの単位は**頭の字がどれも重ならない**ので、並び順で結果は変わらない。
 #: 頭が重なる単位（`時` と `時間` など）を足すときは、**長いほうを先に**並べること。
 _UNIT = "|".join(re.escape(u) for u in UNITS)
+#: 通貨記号 → 単位。要約器は本文の `$250` を `250ドル` と**言い換える**（2026-10-04 の実物・U19）。
+#: 記号は NFKC の後の形（`￥` は `¥`、`＄` は `$` になる）。
+CURRENCY = {"$": "ドル", "¥": "円"}
+_SIGN_OF = {unit: sign for sign, unit in CURRENCY.items()}
 #: 数（小数・桁区切りを含む）＋**単位があれば単位**、または英字で始まる語
 #: （`C++`・`C#`・`Node.js` の記号を含む）。英字の単位の後ろに英字が続けば、単位ではない。
 TOKEN = re.compile(
+    r"(?:(?P<sign>[$¥])[ \t]*)?"
     # 桁区切りは**3桁ずつの組だけ**。`1,2,3` は3つの数で、`123` ではない。
     r"(?P<num>[0-9]{1,3}(?:,[0-9]{3})+(?![0-9])(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)*)"
-    rf"(?:[ \t]*(?P<unit>{_UNIT})(?![A-Za-z]))?"
+    rf"(?:[ \t]*(?P<unit>{_UNIT})(?![A-Za-z])"
+    # 単位の表に無くても、**英字が直接続けば数ごと1つ**（`1M`・`5x`・`3D`・U19）。
+    # 分けると数は弱い数で数えられず、英字だけを照合して、本文の `1M` の `M` に境界で外れる。
+    r"|(?P<suffix>[A-Za-z]+)(?![A-Za-z0-9]))?"
     r"|(?P<word>[A-Za-z][A-Za-z0-9_.+#-]*)"
 )
 #: 照合する側で、主張を数と単位に分ける。
@@ -131,7 +139,11 @@ def claims(text: str) -> tuple[str, ...]:
     for match in TOKEN.finditer(_nfkc(text)):
         if match["num"]:
             # **数は単位ごと**（A）。`200 倍` の空白は詰める。
-            claim = match["num"].replace(",", "") + (match["unit"] or "")
+            unit = match["unit"] or match["suffix"] or ""
+            if match["sign"] and not unit:
+                # `$250` は `250ドル` として抜く。照合は記号と単位のどちらでも裏付ける。
+                unit = CURRENCY[match["sign"]]
+            claim = match["num"].replace(",", "") + unit
         else:
             # 文末の `.` や `-` は語ではない。`C++`・`C#` の記号は残す。
             claim = match["word"].rstrip(".-")
@@ -163,12 +175,17 @@ def present(claim: str, body: str) -> bool:
     if target[:1] in DIGITS:
         number, unit = _NUMBER_AND_UNIT.fullmatch(target).groups()  # type: ignore[union-attr]
         # 前後に数字が無い。`2.5` の `2` や `5` にも当てない。
-        pattern = rf"(?<![0-9])(?<![0-9]\.){re.escape(number)}(?![0-9])(?!\.[0-9])"
+        bare = rf"{re.escape(number)}(?![0-9])(?!\.[0-9])"
+        pattern = rf"(?<![0-9])(?<![0-9]\.){bare}"
         if unit:
             # **単位ごと照合する**（A）。本文の `200 倍` の空白は許すが、**行はまたがない**
             # ——行末の見出し番号が、次の行の頭の字と組んでしまう。
             # 英字の単位は後ろに英字が続けば別の単位（`5m` を `5ms` で裏付けない）。
             pattern += rf"[ \t]*{re.escape(unit)}" + ("(?![A-Za-z])" if unit[-1].isascii() else "")
+            sign = _SIGN_OF.get(unit)
+            if sign:
+                # `250ドル` は本文の `$250` でも裏付ける。**後ろに英字が続けば別の額**（`$250M`）。
+                pattern = rf"(?:{pattern}|{re.escape(sign)}[ \t]*{bare}(?![A-Za-z]))"
         return re.search(pattern, text) is not None
     # 前後に英数字が無い。`C` を `C++` に、`Node` を `Node.js` に当てない。
     pattern = rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_+#])(?![.\-][A-Za-z0-9])"

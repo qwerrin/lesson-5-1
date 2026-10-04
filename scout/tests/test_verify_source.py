@@ -212,6 +212,16 @@ def test_ドル記号は単位ドルとして抜く() -> None:
     assert verify_source.claims("Max は $250、Pro は $ 100") == ("Max", "250ドル", "Pro", "100ドル")
 
 
+def test_通貨記号の後ろに英字の単位があればそちらを残す() -> None:
+    """`$250M` を `250ドル` にすると、**2億5千万ドルが250ドルになる。**"""
+    assert verify_source.claims("調達額は $250M") == ("250M",)
+
+
+def test_数の後ろの英字が数字につながれば数ごとにしない() -> None:
+    """コミットのハッシュ（`3cb4f`）は数でも量でもない。**今まで通り数と語に分ける。**"""
+    assert verify_source.claims("3cb4f を戻す") == ("3", "cb4f")
+
+
 def test_円記号は単位円として抜く() -> None:
     assert verify_source.claims("月額 ¥1,000 と ￥500") == ("1000円", "500円")
 

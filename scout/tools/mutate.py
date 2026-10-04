@@ -933,8 +933,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         VERIFY,
         "**数の後ろの単位を抜かない**（A：`2倍` が裸の `2` になり、`System 2` で裏付けられる）",
-        r'(?:[ \t]*(?P<unit>{_UNIT})(?![A-Za-z]))?"',
-        r'(?P<unit>(?!))?"',
+        r'(?P<unit>{_UNIT})(?![A-Za-z])"',
+        r'(?P<unit>(?!))"',
     ),
     (
         VERIFY,
@@ -945,8 +945,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         VERIFY,
         "英字の単位の後ろの英字を見ない（`5msec` から `ms` を切り取る）",
-        r'(?P<unit>{_UNIT})(?![A-Za-z]))?"',
-        r'(?P<unit>{_UNIT}))?"',
+        r'(?P<unit>{_UNIT})(?![A-Za-z])"',
+        r'(?P<unit>{_UNIT})"',
     ),
     (
         VERIFY,
@@ -957,13 +957,13 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         VERIFY,
         "抜いた数の桁区切りを落とさない",
-        '            claim = match["num"].replace(",", "") + (match["unit"] or "")',
-        '            claim = match["num"] + (match["unit"] or "")',
+        '            claim = match["num"].replace(",", "") + unit',
+        '            claim = match["num"] + unit',
     ),
     (
         VERIFY,
         "抜いた数から単位を落とす",
-        '            claim = match["num"].replace(",", "") + (match["unit"] or "")',
+        '            claim = match["num"].replace(",", "") + unit',
         '            claim = match["num"].replace(",", "")',
     ),
     (
@@ -1055,14 +1055,14 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         VERIFY,
         "数の前の数字を見ない（`50` が `150` に当たる）",
-        r'(?<![0-9])(?<![0-9]\.){re.escape(number)}',
-        r'(?<![0-9]\.){re.escape(number)}',
+        r'pattern = rf"(?<![0-9])(?<![0-9]\.){bare}"',
+        r'pattern = rf"(?<![0-9]\.){bare}"',
     ),
     (
         VERIFY,
         "小数点の後ろの数字に当てる（`5` が `2.5` に当たる）",
-        r'(?<![0-9])(?<![0-9]\.){re.escape(number)}',
-        r'(?<![0-9]){re.escape(number)}',
+        r'pattern = rf"(?<![0-9])(?<![0-9]\.){bare}"',
+        r'pattern = rf"(?<![0-9]){bare}"',
     ),
     (
         VERIFY,
@@ -1312,6 +1312,61 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "**承知で残した穴を書かない**（`3分` が `3分類` で裏付けられることが隠れる）",
         '            "単位の字が別の語の頭かは見ていない）"',
         '            "）"',
+    ),
+    # ---------------------------------------------------------------- U19（本物の初回で出た誤報）
+    (
+        VERIFY,
+        "**数に直接続く英字を数ごとにしない**（`1M` が `1` と `M` に分かれ、本文の `1M` で外れる）",
+        r'    r"|(?P<suffix>[A-Za-z]+)(?![A-Za-z0-9]))?"',
+        r'    r"|(?P<suffix>(?!)))?"',
+    ),
+    (
+        VERIFY,
+        "数に続く英字の後ろの英数字を見ない（ハッシュの `3cb4f` から `3cb` を切り取る）",
+        r'(?P<suffix>[A-Za-z]+)(?![A-Za-z0-9])',
+        r'(?P<suffix>[A-Za-z]+)',
+    ),
+    (
+        VERIFY,
+        "抜いた英字を主張に付けない",
+        '            unit = match["unit"] or match["suffix"] or ""',
+        '            unit = match["unit"] or ""',
+    ),
+    (
+        VERIFY,
+        "**通貨記号を見ない**（`$250` が裸の `250` になる）",
+        r'    r"(?:(?P<sign>[$¥])[ \t]*)?"',
+        r'    r"(?P<sign>(?!))?"',
+    ),
+    (
+        VERIFY,
+        "通貨記号を単位にしない",
+        '            if match["sign"] and not unit:',
+        '            if False:',
+    ),
+    (
+        VERIFY,
+        "**通貨記号で英字の単位を上書きする**（`$250M` が `250ドル` になる）",
+        '            if match["sign"] and not unit:',
+        '            if match["sign"]:',
+    ),
+    (
+        VERIFY,
+        "ドルと円を取り違える",
+        'CURRENCY = {"$": "ドル", "¥": "円"}',
+        'CURRENCY = {"$": "円", "¥": "ドル"}',
+    ),
+    (
+        VERIFY,
+        "**本文の通貨記号で裏付けない**（`250ドル` が `$250` で外れる）",
+        "            if sign:",
+        "            if False:",
+    ),
+    (
+        VERIFY,
+        "**通貨記号の後ろの英字を見ない**（`250ドル` を `$250M` で裏付ける）",
+        r'{re.escape(sign)}[ \t]*{bare}(?![A-Za-z]))"',
+        r'{re.escape(sign)}[ \t]*{bare})"',
     ),
     # ================================================================ emit
     # 狙うのは **「書けたように見えて、読み戻すと違う」** と **「外の文字列が構造を壊す」**。

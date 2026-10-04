@@ -126,8 +126,13 @@ def test_英字の単位も一緒に抜く() -> None:
 
 
 def test_英字の単位の後ろに英字が続けば単位にしない() -> None:
-    """`5msec` の `ms` は単位ではない。**語の途中を単位として切り取らない。**"""
-    assert verify_source.claims("5msec で返る") == ("5", "msec")
+    """`5msec` の `ms` は単位ではない。**語の途中を単位として切り取らない。**
+
+    2026-10-04 に期待値を `("5", "msec")` から変えた（U19）。数に英字が**直接**続く形は
+    数ごと1つの主張にする——分けると `5` は弱い数で数えられず、`msec` だけを照合していた。
+    `ms` を切り取らないことは変わらない。
+    """
+    assert verify_source.claims("5msec で返る") == ("5msec",)
 
 
 def test_単位でない字は付けない() -> None:
@@ -166,6 +171,82 @@ def test_単位つきでも数の一部には当てない() -> None:
 def test_英字の単位の後ろに英字が続けば別の単位() -> None:
     """`5ms` は `5msec` の一部ではない……のではなく、**`5m` を `5ms` で裏付けない。**"""
     assert not verify_source.present("5m", "5ms で返る")
+
+
+# --------------------------------------------------------------------------
+# 本物の初回で出た誤報（2026-10-04・U19）
+# --------------------------------------------------------------------------
+#
+# 「本文に無い主張」が9件中2件出たが、本文を開くと**どちらも要約は正しかった**。
+# ①数に英字が直接続く形（`1M`）を数と語に分けていた
+# ②要約器が `$250` を `250ドル` と言い換えた
+# **緩めすぎて「照合済み」の誤りを作らない**ので、通すものと同じだけ、通さないものも置く。
+
+
+def test_数に英字が直接続く形は1つの主張() -> None:
+    assert verify_source.claims("1Mコンテキストに対応") == ("1M",)
+    assert verify_source.claims("3D表示と5x速い") == ("3D", "5x")
+
+
+def test_数に続く英字は本文でも数ごと照合する() -> None:
+    """実物: 要約「1Mコンテキストへの対応」／本文「1M コンテキストで、料金は…」。"""
+    assert _one("1Mコンテキストへの対応", "モデルになりました。1M コンテキストで").verdict == verify_source.CONFIRMED
+
+
+def test_数に続く英字が本文で別の語の頭なら裏付けない() -> None:
+    assert not verify_source.present("1M", "容量は 1MB まで")
+    assert not verify_source.present("1M", "1 Mbps")
+
+
+def test_数に続く英字が違えば裏付けない() -> None:
+    assert not verify_source.present("1M", "1K コンテキスト")
+    assert not verify_source.present("1M", "1m の距離")  # 大小を区別する
+
+
+def test_数に続く英字の主張は数だけでは裏付けない() -> None:
+    """`1M` を本文の裸の `1` で通すと、*数だけでは何の数か分からない*（U14 の A）に戻る。"""
+    assert not verify_source.present("1M", "手順 1 を実行する")
+
+
+def test_ドル記号は単位ドルとして抜く() -> None:
+    assert verify_source.claims("Max は $250、Pro は $ 100") == ("Max", "250ドル", "Pro", "100ドル")
+
+
+def test_円記号は単位円として抜く() -> None:
+    assert verify_source.claims("月額 ¥1,000 と ￥500") == ("1000円", "500円")
+
+
+def test_ドルと書いた要約を本文のドル記号で裏付ける() -> None:
+    """実物: 要約「Maxは250ドル、Proは100ドル」／本文「Max は $250、Pro は $100 で」。"""
+    check = _one("（Maxは250ドル、Proは100ドル）", "Max は $250、Pro は $100 で、一回限りです。")
+    assert check.verdict == verify_source.CONFIRMED
+
+
+def test_ドル記号の要約を本文のドルで裏付ける() -> None:
+    assert verify_source.present("250ドル", "上限は 250 ドルです")
+    assert _one("$250 まで", "上限は 250ドル です").verdict == verify_source.CONFIRMED
+
+
+def test_円記号と円を互いに裏付ける() -> None:
+    assert verify_source.present("1000円", "月額 ¥1,000")
+    assert verify_source.present("500円", "月額 ￥ 500")
+
+
+def test_ドル記号でも数の一部には当てない() -> None:
+    assert not verify_source.present("250ドル", "$2500 の枠")
+    assert not verify_source.present("2ドル", "$2.50 の枠")
+    assert not verify_source.present("25ドル", "$250 の枠")
+
+
+def test_ドル記号の後ろに英字が続けば別の額() -> None:
+    """`$250M` は2億5千万ドル。**250ドルを裏付けない。**"""
+    assert not verify_source.present("250ドル", "調達額は $250M")
+
+
+def test_通貨が違えば裏付けない() -> None:
+    assert not verify_source.present("250ドル", "250円の枠")
+    assert not verify_source.present("250ドル", "¥250 の枠")
+    assert not verify_source.present("250円", "$250 の枠")
 
 
 # --------------------------------------------------------------------------

@@ -692,6 +692,49 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         'breakdown = "・".join(f"{r} {n}" for r, n in sorted(self.reasons.items()))',
         'breakdown = ""',
     ),
+    (
+        RANK,
+        "**上限で外したものを「落とした」と言う**（見出しで出るのに消えたように読める）",
+        "            f\"／選ばなかった {len(self.dropped)} 件（{breakdown or 'なし'}）\"",
+        "            f\"／落とした {len(self.dropped)} 件（{breakdown or 'なし'}）\"",
+    ),
+    # ---------------------------------------------------------------- 上限で落ちた記事（2026-10-04）
+    (
+        SPLIT,
+        "**上限で落ちた記事を運ばない**（見出しにも載らない＝元の穴）",
+        "        if rejected.reason == OVER_CAP:",
+        "        if False:",
+    ),
+    (
+        SPLIT,
+        "**ミュートした記事も運ぶ**（本人が見たくないと書いたもの）",
+        "        if rejected.reason == OVER_CAP:",
+        "        if True:",
+    ),
+    (
+        SPLIT,
+        "ミュート以外は全部運ぶ（知らない理由を生き返らせる）",
+        "        if rejected.reason == OVER_CAP:",
+        '        if rejected.reason != "muted":',
+    ),
+    (
+        SPLIT,
+        "上限で落ちた記事の点を捨てる",
+        "            headline.append(Headline(kept=rejected.kept, reason=OVER_CAP, score=rejected.score))",
+        "            headline.append(Headline(kept=rejected.kept, reason=OVER_CAP, score=None))",
+    ),
+    (
+        SPLIT,
+        "上限で落ちた理由を「点を付けなかった」と偽る",
+        "            headline.append(Headline(kept=rejected.kept, reason=OVER_CAP, score=rejected.score))",
+        "            headline.append(Headline(kept=rejected.kept, reason=UNRANKED, score=rejected.score))",
+    ),
+    (
+        SPLIT,
+        "上限で落ちた記事を先頭に並べる",
+        "            headline.append(Headline(kept=rejected.kept, reason=OVER_CAP, score=rejected.score))",
+        "            headline.insert(0, Headline(kept=rejected.kept, reason=OVER_CAP, score=rejected.score))",
+    ),
     # ================================================================ summarize
     # ---------------------------------------------------------------- 課金
     (

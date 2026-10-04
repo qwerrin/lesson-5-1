@@ -388,6 +388,28 @@ def test_full_run_writes_the_note_sends_once_and_saves_the_ledger(tmp_path: Path
     assert "m-1" in out
 
 
+def test_articles_over_the_cap_are_listed_as_headlines_and_recorded(tmp_path: Path) -> None:
+    """**上限で外れた記事が見出しにも載らず消えていた**（2026-10-04・U22）。通しで確かめる。
+
+    要約は上限の数だけ（課金は増えない）、外れた記事は見出しだけで Inbox に載り、
+    読み戻しは問題なし、台帳にも入る（翌日もう一度は来ない）。上限超えは「注意」にしない。
+    """
+    _config_file(tmp_path, CONFIG.replace("cap = 10", "cap = 1"))
+    urls = ("https://qiita.com/a/items/1", "https://qiita.com/a/items/2", "https://qiita.com/a/items/3")
+    world = _World(qiita=urls)
+
+    code = _main(tmp_path, world)
+
+    assert code == 0
+    assert len(world.prompts) == 1
+    note = _note(tmp_path)
+    assert note.count("見出しだけ（over_cap）") == 2
+    assert all(f"]({url})" in note for url in urls)
+    assert world.line.bodies[0].startswith("【scout】正常｜")
+    assert "読み戻し: 問題なし" in world.line.bodies[0]
+    assert set(urls) <= _state(tmp_path).seen
+
+
 def test_second_run_drops_what_was_seen_and_still_notifies(tmp_path: Path) -> None:
     world = _World()
     _main(tmp_path, world)

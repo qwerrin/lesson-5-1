@@ -15,8 +15,12 @@ model = "gemini-3.5-flash-lite"
 summarizable = ["qiita"]
 
 [profile]
-tags = ["ClaudeCode"]
-keywords = ["Claude Code"]
+# **点は関心で付ける**（2026-10-04・DESIGN U22）。以前の `ClaudeCode` タグと `Claude Code` は、
+# 取得の時点で全員に付いているので点が平らになり、いいね（ほぼ全部 0〜1）で選ばれていた。
+# 取得の絞り込みは sources の query（tag:ClaudeCode）がやるので、ここから外しても集める記事は変わらない。
+# 語はタイトルの部分一致——`mod` だと `Plan Mode` に当たるので `mods` にしてある。
+tags = ["ContextEngineering", "コンテキスト管理", "MCP", "AnthropicSkills", "SKILLS"]
+keywords = ["CLAUDE.md", "memory", "記憶", "引き継ぎ", "コンテキスト", "文脈", "MCP", "mods", "スキル", "skill"]
 mute_tags = []
 mute_keywords = []
 # 要約へ回す上限。`max_calls`（既定 10）より大きくすると設定の誤りになる。

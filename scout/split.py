@@ -22,13 +22,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from dedupe import Kept
-from rank import Ranking, Scored
+# `OVER_CAP` は見出しの理由にもそのまま使う（上限で落ちた記事は、要約せず見出しだけ出す）。
+from rank import OVER_CAP, Ranking, Scored
 
 #: 見出しだけ出す理由。**1件につき1つに決める。**
 NOT_SUMMARIZABLE = "not_summarizable"
 NO_BODY = "no_body"
 TOO_SHORT = "too_short"
-#: 本文も取得元も問題ないが、`rank` で点を付けなかった（**上限の外**）。
+#: 本文も取得元も問題ないが、`rank` で点を付けなかった（物差しが無いので**上限の枠に入らない**）。
+#: `rank` の上限で外れた記事は、別の理由 `OVER_CAP` で見出しだけ出す。
 UNRANKED = "unranked"
 
 #: 要約へ回す本文の最短（前後の空白を除いた字数）。
@@ -96,6 +98,12 @@ def split(
             # **取得元のせいにしない**——理由が嘘だと、直し方を間違える。
             reason = UNRANKED
         headline.append(Headline(kept=kept, reason=reason, score=None))
+
+    for rejected in ranking.dropped:
+        # **上限で落ちた記事が見出しにも載らなかった**（2026-10-04・1日57件中47件）。
+        # 運ぶのは上限超えだけ——ミュートは本人が「見たくない」と書いたもの、知らない理由は生き返らせない。
+        if rejected.reason == OVER_CAP:
+            headline.append(Headline(kept=rejected.kept, reason=OVER_CAP, score=rejected.score))
 
     return Split(summarize=tuple(summarize), headline=tuple(headline))
 

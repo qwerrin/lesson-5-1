@@ -282,15 +282,82 @@ def test_見出しにも点を残す() -> None:
     assert [h.score for h in got.headline] == [2, None]
 
 
-def test_捨てたものは運ばない() -> None:
-    """`rank` が落としたものは `rank` の記録に残っている。**ここで生き返らせない。**"""
-    rejected = rank.Rejected(
-        kept=_kept("https://q.com/dropped"), reason=rank.OVER_CAP, detail="", score=0, hits=()
+def _rejected(url: str, reason: str, *, score: int | None = 0) -> rank.Rejected:
+    return rank.Rejected(kept=_kept(url), reason=reason, detail="", score=score, hits=())
+
+
+def test_ミュートしたものは運ばない() -> None:
+    """**本人が「見たくない」と書いたもの。** 見出しでも生き返らせない。"""
+    got = split.split(
+        _ranking(dropped=(_rejected("https://q.com/muted", rank.MUTED, score=None),)), summarizable=ALLOWED
     )
 
-    got = split.split(_ranking(dropped=(rejected,)), summarizable=ALLOWED)
-
     assert (got.summarize, got.headline) == ((), ())
+
+
+def test_上限で落ちたものは見出しだけで運ぶ() -> None:
+    """**上限で落ちた記事が見出しにも載らなかった**（2026-10-04・1日57件中47件）。
+
+    要約の枠は増やさない（課金は変わらない）。見出しとリンクだけ出して、*落ちたことを見えるようにする*。
+    本文が長くても要約へは回さない——回すと `rank` の上限を素通りする。
+    """
+    got = split.split(
+        _ranking(
+            picked=(_scored("https://q.com/picked"),),
+            dropped=(_rejected("https://q.com/over", rank.OVER_CAP, score=3),),
+        ),
+        summarizable=ALLOWED,
+    )
+
+    assert _urls(got.summarize) == ["https://q.com/picked"]
+    assert _urls(got.headline) == ["https://q.com/over"]
+    assert [(h.reason, h.score) for h in got.headline] == [(split.OVER_CAP, 3)]
+
+
+def test_上限で落ちたものは最後に落ちた順のまま() -> None:
+    """選んだもの・点を付けなかったものの**後ろ**。`rank` が並べた順（点の高い順）を壊さない。"""
+    got = split.split(
+        _ranking(
+            picked=(_scored("https://q.com/short", body="短い"),),
+            unranked=(_kept("https://zenn.dev/x", source="zenn", body=None),),
+            dropped=(
+                _rejected("https://q.com/over-b", rank.OVER_CAP, score=2),
+                _rejected("https://q.com/muted", rank.MUTED, score=None),
+                _rejected("https://q.com/over-a", rank.OVER_CAP, score=1),
+            ),
+        ),
+        summarizable=ALLOWED,
+    )
+
+    assert _urls(got.headline) == [
+        "https://q.com/short",
+        "https://zenn.dev/x",
+        "https://q.com/over-b",
+        "https://q.com/over-a",
+    ]
+
+
+def test_知らない理由で落ちたものは運ばない() -> None:
+    """**運ぶのは上限超えだけ。** `rank` が捨てる理由を足した日に、黙って見出しへ生き返らせない。"""
+    got = split.split(
+        _ranking(dropped=(_rejected("https://q.com/x", "duplicate_author"),)), summarizable=ALLOWED
+    )
+
+    assert got.headline == ()
+
+
+def test_上限で落ちたものも件数と内訳に入る() -> None:
+    got = split.split(
+        _ranking(
+            picked=(_scored("https://q.com/a"),),
+            dropped=(_rejected("https://q.com/b", rank.OVER_CAP), _rejected("https://q.com/c", rank.OVER_CAP)),
+        ),
+        summarizable=ALLOWED,
+    )
+
+    assert got.total == 3
+    assert got.reasons == {split.OVER_CAP: 2}
+    assert "見出しだけ 2 件（over_cap 2）" in got.summary
 
 
 # --------------------------------------------------------------------------

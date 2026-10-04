@@ -83,7 +83,8 @@ class Ranking:
         return (
             f"{self.total} 件中 {len(self.picked)} 件を選んだ"
             f"／点を付けなかった {len(self.unranked)} 件"
-            f"／落とした {len(self.dropped)} 件（{breakdown or 'なし'}）"
+            # **「落とした」と言わない。** 上限で外した記事は `split` が見出しだけで運ぶ（U22）。
+            f"／選ばなかった {len(self.dropped)} 件（{breakdown or 'なし'}）"
         )
 
 

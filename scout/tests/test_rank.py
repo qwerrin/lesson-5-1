@@ -430,6 +430,20 @@ def test_件数と理由ごとの内訳を出す() -> None:
     assert rank.OVER_CAP in got.summary
 
 
+def test_上限で外したものを落としたと言わない() -> None:
+    """**上限で外した記事は、`split` が見出しだけで運ぶ**（2026-10-04・U22）。
+
+    同じ通知に「落とした 13 件」と「見出しだけ 13 件」が並ぶと、消えたのか出たのか分からない。
+    `rank` が言えるのは「要約へ選ばなかった」ことまで。
+    """
+    items = [_qiita("https://q.com/a", tags=("python",)), _qiita("https://q.com/b", tags=("python",))]
+
+    got = rank.rank(items, _profile(cap=1))
+
+    assert "選ばなかった 1 件（over_cap 1）" in got.summary
+    assert "落とした" not in got.summary
+
+
 def test_記事が0件でも落ちない() -> None:
     """**0件は異常ではない。** 前回から新しい記事が無い日は普通にある。"""
     got = rank.rank([], _profile())

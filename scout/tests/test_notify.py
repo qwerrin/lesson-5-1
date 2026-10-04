@@ -174,6 +174,35 @@ def test_unconfirmed_summaries_need_attention(verdict: str) -> None:
     assert any("1 件" in r for r in health.reasons)
 
 
+def test_mismatch_and_unverifiable_are_reported_separately() -> None:
+    """**「確かめた結果、怪しい」と「確かめていない」は意味が逆。** 1行目で区別できるように分ける。
+
+    2026-10-04 22:00 の LINE は、本文に無い主張の1件を「照合できなかった要約 1 件」と出した
+    ——本文が読めなかった回と同じ顔になっていた。件数の取り違えも見えるよう、数を変えておく。
+    """
+    health = _judge(
+        audit=_audit(
+            verify_source.MISMATCH, verify_source.MISMATCH, verify_source.UNVERIFIABLE, verify_source.CONFIRMED
+        )
+    )
+    assert health.level == notify.ATTENTION
+    assert "本文に無い主張を含む要約 2 件" in health.reasons
+    assert "本文で確かめられなかった要約 1 件" in health.reasons
+    assert not any("照合できなかった" in r for r in health.reasons)
+
+
+def test_only_the_verdicts_that_occurred_are_reported() -> None:
+    health = _judge(audit=_audit(verify_source.CONFIRMED, verify_source.UNVERIFIABLE))
+    assert health.reasons == ("本文で確かめられなかった要約 1 件",)
+
+
+def test_unknown_verdict_is_not_silently_passed() -> None:
+    """`verify_source` が判定を足した日に、**知らない判定を照合済みとして黙って通さない。**"""
+    health = _judge(audit=_audit(verify_source.CONFIRMED, "partial"))
+    assert health.level == notify.ATTENTION
+    assert health.reasons == ("照合の結果が分からない要約 1 件",)
+
+
 def test_truncated_source_needs_attention() -> None:
     """**まだ先がある**＝取りこぼし（H1・M1）。"""
     health = _judge(harvest=_harvest(_source("qiita", more=True)))
@@ -252,7 +281,7 @@ def test_reasons_are_listed_when_not_normal() -> None:
 
 
 def test_attention_label() -> None:
-    body = _compose(health=notify.Health(level=notify.ATTENTION, reasons=("照合できなかった 1 件",)))
+    body = _compose(health=notify.Health(level=notify.ATTENTION, reasons=("本文に無い主張を含む要約 1 件",)))
     assert body.startswith("【scout】注意｜")
 
 

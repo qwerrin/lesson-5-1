@@ -1885,15 +1885,51 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         NOTIFY,
-        "**照合できなかった要約を見ない**",
-        "    if unconfirmed:",
+        "**本文に無い主張を見ない**",
+        "    if mismatched:",
         "    if False:",
     ),
     (
         NOTIFY,
-        "本文に無い主張だけを数える（確認できないを数えない）",
-        "c.verdict != CONFIRMED",
-        "c.verdict == \"mismatch\"",  # import していない名前を使うと NameError で偽の kill になる
+        "**本文で確かめられなかった要約を見ない**",
+        "    if unverifiable:",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "**知らない判定を黙って通す**",
+        "    if unknown:",
+        "    if False:",
+    ),
+    (
+        NOTIFY,
+        "本文に無い主張の件数を取り違える",
+        'f"本文に無い主張を含む要約 {mismatched} 件"',
+        'f"本文に無い主張を含む要約 {unverifiable} 件"',
+    ),
+    (
+        NOTIFY,
+        "確かめられなかった件数を取り違える",
+        'f"本文で確かめられなかった要約 {unverifiable} 件"',
+        'f"本文で確かめられなかった要約 {mismatched} 件"',
+    ),
+    (
+        NOTIFY,
+        "**判定の名前を取り違える**（本文に無い主張を、確かめていない側で数える）",
+        "    mismatched = verdicts.count(MISMATCH)",
+        "    mismatched = verdicts.count(UNVERIFIABLE)",
+    ),
+    (
+        NOTIFY,
+        "**照合済みを知らない判定に数える**",
+        "len(verdicts) - verdicts.count(CONFIRMED) - mismatched",
+        "len(verdicts) - mismatched",
+    ),
+    (
+        NOTIFY,
+        "本文に無い主張を知らない判定にも数える",
+        " - mismatched - unverifiable",
+        " - unverifiable",
     ),
     (
         NOTIFY,

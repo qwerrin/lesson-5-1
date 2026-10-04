@@ -46,7 +46,7 @@ from common import line_auth, line_send
 from emit import Emitted
 from fetch import EMPTY, FAILED, OK, Harvest
 from summarize import Digest
-from verify_source import CONFIRMED, Audit
+from verify_source import CONFIRMED, MISMATCH, UNVERIFIABLE, Audit
 
 NORMAL = "normal"
 ATTENTION = "attention"
@@ -120,9 +120,18 @@ def judge(
         abnormal.append("Inbox に書けなかった")
     elif not emitted.ok:
         abnormal.append(f"Inbox の読み戻しに問題 {len(emitted.problems)} 件")
-    unconfirmed = sum(1 for c in audit.checks if c.verdict != CONFIRMED)
-    if unconfirmed:
-        attention.append(f"照合できなかった要約 {unconfirmed} 件")
+    # **「確かめた結果、怪しい」と「確かめていない」は意味が逆**なので、1行目で区別できるよう分ける。
+    # 知らない判定も黙って通さない（`verify_source` が判定を足した日）。
+    verdicts = [c.verdict for c in audit.checks]
+    mismatched = verdicts.count(MISMATCH)
+    unverifiable = verdicts.count(UNVERIFIABLE)
+    unknown = len(verdicts) - verdicts.count(CONFIRMED) - mismatched - unverifiable
+    if mismatched:
+        attention.append(f"本文に無い主張を含む要約 {mismatched} 件")
+    if unverifiable:
+        attention.append(f"本文で確かめられなかった要約 {unverifiable} 件")
+    if unknown:
+        attention.append(f"照合の結果が分からない要約 {unknown} 件")
 
     level = ABNORMAL if abnormal else ATTENTION if attention else NORMAL
     return Health(level=level, reasons=(*abnormal, *attention))

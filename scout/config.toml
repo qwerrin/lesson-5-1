@@ -26,7 +26,11 @@ cap = 10
 name = "qiita"
 kind = "qiita"
 query = "tag:ClaudeCode"
-limit = 20
+# **1回で取れる上限（100）にしておく。** `fetch` はページをめくらないので、
+# 「まだ先がある」回は日付を進めず、しかも残りは取れない＝毎日「注意」のまま止まる。
+# 2026-10-03 の実測で、tag:ClaudeCode は2日分で20件を超えていた（DESIGN U18）。
+# 要約は profile.cap で10件までなので、上げても Gemini の課金は増えない。
+limit = 100
 
 [[sources]]
 name = "zenn"

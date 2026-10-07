@@ -58,11 +58,12 @@ def _summary(
     *,
     url: str = "https://q.com/x",
     quotes: tuple[str, ...] = (),
+    title: str = "記事",
 ) -> summarize.Summary:
     article = fetch.Article(
         source="qiita",
         url=url,
-        title="記事",
+        title=title,
         body=body,
         published_at=WHEN,
         updated_at=None,
@@ -750,3 +751,110 @@ def test_要約が0件でも落ちない() -> None:
 
     assert got.checks == ()
     assert "0 件中 0 件" in got.summary
+
+
+# --------------------------------------------------------------------------
+# U23：定期実行の 10-06・10-07 で出た「本文に無い主張」4件は、4件とも照合器の誤報だった
+# （本文を Qiita API で開いて確認・2026-10-07）。要約はどれも正しかった。
+# --------------------------------------------------------------------------
+
+
+def test_下線で始まる語は下線ごと抜く() -> None:
+    """**抜くときと比べるときで `_` の扱いを揃える。** 抜き出しが `_` を飛ばして `meta` を抜き、
+    照合は「前に `_` があれば別の語」と見ていたので、本文の `_meta` で裏付けられなかった。"""
+    assert verify_source.claims("_metaフィールドで設定する") == ("_meta",)
+
+
+def test_下線で始まる語を本文の同じ語で裏付ける() -> None:
+    assert verify_source.present("_meta", "各ツールの _meta フィールドに書く")
+
+
+def test_下線で始まる語は下線の無い語で裏付けない() -> None:
+    assert not verify_source.present("_meta", "meta フィールドに書く")
+
+
+def test_下線で始まる語でも前に英数字があれば別の語() -> None:
+    assert not verify_source.present("_meta", "x_meta を使う")
+
+
+def test_タイトルにある語で裏付ける() -> None:
+    """**要約器にはタイトルと本文を渡している**（`summarize._prompt`）。照合の相手もそれに揃える。
+    10-07：要約の `Tips` はタイトルにあり、本文には無かった。"""
+    got = _one("実務Tipsを紹介している。", "hooks の話", title="Claude Code実務Tips総まとめ")
+
+    assert got.verdict == verify_source.CONFIRMED
+    assert got.found == ("Tips",)
+
+
+def test_本文が無ければタイトルがあっても確認できない() -> None:
+    """**M8：タイトルだけで照合済みにしない。** 本文を読めていないことは変わらない。"""
+    got = _one("Tips の話。", None, title="Tips まとめ")
+
+    assert got.verdict == verify_source.UNVERIFIABLE
+
+
+def test_引用はタイトルと比べない() -> None:
+    """引用は「**本文から**そのまま」と頼んでいる。タイトルの一節は本文の引用にならない。"""
+    got = _one("Tips の話。", "本文", title="Tips まとめ", quotes=("Tips まとめ",))
+
+    assert got.quotes_missing == ("Tips まとめ",)
+
+
+def test_年月日を本文の日付の書き方で裏付ける() -> None:
+    """**要約器は本文の `2026-10-04` を `2026年10月4日` と言い換える**（10-06・10-07 の実物）。"""
+    got = _one("2026年10月4日の更新。", "2026-10-04 の更新")
+
+    assert got.verdict == verify_source.CONFIRMED
+    assert got.found == ("2026年", "10月", "4日")
+
+
+def test_スラッシュ区切りの日付でも裏付ける() -> None:
+    assert verify_source.present("4日", "2026/10/04 に公開")
+    assert verify_source.present("10月", "2026/10/04 に公開")
+    assert verify_source.present("2026年", "2026/10/04 に公開")
+
+
+def test_ゼロ埋めの無い日付でも裏付ける() -> None:
+    assert verify_source.present("4日", "2026-10-4 に公開")
+
+
+def test_日付の位置が違えば裏付けない() -> None:
+    """**位置ごとに見る。** `10月` を日の `10` で、`4日` を月の `04` で裏付けない。"""
+    assert not verify_source.present("10月", "2026-04-10")
+    assert not verify_source.present("4日", "2026-04-10")
+    assert not verify_source.present("2026年", "10-04-2026")
+
+
+def test_年月日以外の単位は日付で裏付けない() -> None:
+    assert not verify_source.present("4件", "2026-10-04")
+    assert not verify_source.present("10回", "2026-10-04")
+
+
+def test_日付の一部には当てない() -> None:
+    assert not verify_source.present("4日", "2026-10-041")
+    assert not verify_source.present("2026年", "12026-10-04")
+    assert not verify_source.present("10月", "2026-110-04")
+
+
+def test_日付でない数の並びでは裏付けない() -> None:
+    """区切りが混ざったもの・年が4桁でないものは日付として読まない。"""
+    assert not verify_source.present("4日", "2026-10/04")
+    assert not verify_source.present("4日", "26-10-04")
+    assert not verify_source.present("4日", "2026-110-04")
+
+
+def test_4桁でない年と3桁以上の月日は日付で裏付けない() -> None:
+    assert not verify_source.present("26年", "26-10-04")
+    assert not verify_source.present("100日", "2026-10-100")
+
+
+def test_実データの誤報_日付の言い換えと下線で始まる語() -> None:
+    """**U23：2026-10-07 22:00 の本番。** 本文を開くと要約は正しかった。"""
+    check = _one(
+        "2026年10月5日の公式ドキュメント更新により、上限は原則50,000文字で、"
+        "_metaフィールドのanthropic/maxResultSizeCharsを用いて設定できる。",
+        "文字数の上限は 2026-10-05 時点で 50,000 文字です。"
+        "レスポンスの各ツールエントリの _meta フィールドで anthropic/maxResultSizeChars を設定",
+    )
+    assert check.verdict == verify_source.CONFIRMED
+    assert check.missing == ()

@@ -25,6 +25,14 @@
 - 単位の後ろに漢字が来たら弾く → 実データの中央値の記事にある `200倍速く` まで「本文に無い」になる
 
 起きるのは**同じ数＋その単位の字で始まる別の語**が本文にあるときだけ。出力の文言にも書く。
+
+**日付は年・月・日を別々に照合する**（2026-10-07 のレビュー・**承知で残す**）。
+`2026年10月5日` は、本文の `2026-10-04` と `2025-03-05` の2つで裏付けられてしまう。
+数と語を1つずつ見る、ほかの主張と同じ限界。
+
+**`__init__` のように `__` で囲まれた語**（2026-10-07 のレビュー・**承知で残す**）。
+本文の `__` は強調の印として落とすので、本文の `__init__` は `init` になり、「本文に無い」と出る。
+*安全側の誤報*で、閉じるには強調の落とし方から考え直す必要がある。
 """
 
 from __future__ import annotations
@@ -111,7 +119,9 @@ TOKEN = re.compile(
     # 単位の表に無くても、**英字が直接続けば数ごと1つ**（`1M`・`5x`・`3D`・U19）。
     # 分けると数は弱い数で数えられず、英字だけを照合して、本文の `1M` の `M` に境界で外れる。
     r"|(?P<suffix>[A-Za-z]+)(?![A-Za-z0-9]))?"
-    r"|(?P<word>[A-Za-z][A-Za-z0-9_.+#-]*)"
+    # 頭の `_` も語に含める（`_meta`）。照合は `_` を語の字として境界を取るので、
+    # 抜くときに飛ばすと本文の `_meta` で裏付けられなくなる（2026-10-07 の実物・U23）。
+    r"|(?P<word>_*[A-Za-z][A-Za-z0-9_.+#-]*)"
 )
 #: 照合する側で、主張を数と単位に分ける。
 _NUMBER_AND_UNIT = re.compile(r"([0-9]+(?:\.[0-9]+)*)(.*)")
@@ -147,7 +157,7 @@ def claims(text: str) -> tuple[str, ...]:
         else:
             # 文末の `.` や `-` は語ではない。`C++`・`C#` の記号は残す。
             claim = match["word"].rstrip(".-")
-        # 抜いた語は必ず英数字で始まるので、空にはならない。
+        # 抜いた語は必ず英数字か `_` で始まるので、空にはならない。
         if claim not in found:
             found.append(claim)
     return tuple(found)
@@ -186,6 +196,9 @@ def present(claim: str, body: str) -> bool:
             if sign:
                 # `250ドル` は本文の `$250` でも裏付ける。**後ろに英字が続けば別の額**（`$250M`）。
                 pattern = rf"(?:{pattern}|{re.escape(sign)}[ \t]*{bare}(?![A-Za-z]))"
+            date = _date(number, unit)
+            if date:
+                pattern = rf"(?:{pattern}|{date})"
         return re.search(pattern, text) is not None
     # **短い語は大小を区別し、継ぎ目も許さない。** `Go`・`IF`・`AI` は、小文字だと普通の英単語や
     # コードになる。`AIs` は `A Is` で切れる（2026-10-04 のレビュー）。
@@ -195,6 +208,30 @@ def present(claim: str, body: str) -> bool:
     pattern = rf"(?<![A-Za-z0-9_]){word}(?![A-Za-z0-9_+#])(?![.\-][A-Za-z0-9])"
     flags = 0 if short else re.IGNORECASE
     return re.search(pattern, text, flags=flags) is not None
+
+
+def _date(number: str, unit: str) -> str | None:
+    """`2026年`・`10月`・`4日` を、本文の `2026-10-04`・`2026/10/04` の**その位置の数**で裏付ける正規表現。
+
+    要約器は本文の `2026-10-04` を `2026年10月4日` と言い換える（2026-10-06・07 の実物・U23）。
+    **位置ごとに見る**——`10月` を日の `10` で裏付けない。区切りは1つの日付の中で揃っているものだけ。
+    年は4桁、月と日はゼロ埋めの有無を問わない。それ以外の数は日付で裏付けない。
+    """
+    position = _DATE_PART.get(unit)
+    if position is None:
+        return None
+    if position == 0 and not re.fullmatch(r"[0-9]{4}", number):
+        return None
+    if position and not re.fullmatch(r"[0-9]{1,2}", number):
+        return None
+    parts = [r"[0-9]{4}", r"[0-9]{1,2}", r"[0-9]{1,2}"]
+    parts[position] = ("0?" if position else "") + number
+    # 名前で参照する。番号だと、組み合わせた先の正規表現にグループが増えたときにずれる。
+    return rf"(?<![0-9]){parts[0]}(?P<sep>[-/]){parts[1]}(?P=sep){parts[2]}(?![0-9])"
+
+
+#: 日付の中の位置。`2026-10-04` の 0 が年、1 が月、2 が日。
+_DATE_PART = {"年": 0, "月": 1, "日": 2}
 
 
 def _seams(word: str) -> str:
@@ -234,17 +271,23 @@ def verify(summaries: Sequence[Summary]) -> Audit:
 
 
 def _check(summary: Summary) -> Check:
-    body = summary.scored.kept.article.body
+    article = summary.scored.kept.article
+    body = article.body
     if not body:
         # **M8：読めなかったことと、問題なかったことを分ける。** 見ていないので missing も空。
+        # タイトルがあっても同じ——タイトルだけで照合済みにしない。
         return Check(summary=summary, verdict=UNVERIFIABLE, found=(), missing=(), quotes_missing=())
 
     every = claims(summary.text)
     # **弱い主張は数えないが、隠さない**（B）。見つかっても何も証明しない。
     weak_ones = tuple(c for c in every if weak(c))
     asserted = tuple(c for c in every if c not in weak_ones)
-    found = tuple(c for c in asserted if present(c, body))
+    # **要約器が見たものと同じ相手で照合する。** 要約器にはタイトルと本文を渡している
+    # （`summarize._prompt`）ので、本文だけだとタイトルから取った語が「本文に無い」になる（U23）。
+    source = f"{article.title}\n\n{body}"
+    found = tuple(c for c in asserted if present(c, source))
     missing = tuple(c for c in asserted if c not in found)
+    # 引用は「**本文から**そのまま」と頼んでいるので、本文とだけ比べる。
     cleaned = _clean(body)
     quotes_missing = tuple(q for q in summary.quotes if _clean(q) not in cleaned)
 

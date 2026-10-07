@@ -19,6 +19,9 @@ G            終了コード: 0＝正常・注意／1＝異常か送れなかっ
 H            `build_session` に timeout が無いので、get/post に timeout を足す薄い包みに入れる
 I            `--dry-run` は Gemini も LINE も書き込みもしない。`--no-notify` は本文を出して、送らなかったと書く
 J            接続ごと差し込む。**このファイルのどのテストも外へ接続できない**
+K            （2026-10-07）1回ごとに `state/runs.jsonl` へ追記し、7日に1回その回の1通の末尾に
+             週次まとめを足す。**送れて、切られずに残ったときだけ**「出した」にする。
+             `--dry-run` と `--inbox` は記録しない（DESIGN 10-1）
 ============ ====================================================================
 """
 
@@ -42,6 +45,7 @@ import cli  # noqa: E402
 import fetch  # noqa: E402
 import notify  # noqa: E402
 import summarize  # noqa: E402
+import weekly  # noqa: E402
 from common.gemini_client import Reply  # noqa: E402
 
 #: **実行日と違う日**にしておく。
@@ -597,13 +601,16 @@ def test_line_failure_exits_one_but_the_ledger_is_saved(tmp_path: Path, capsys: 
 
 
 def test_ledger_save_failure_exits_one_and_is_in_the_notification(tmp_path: Path) -> None:
-    # 台帳の**親がファイル**。読むときは「まだ無い」で、書くときに初めて失敗する。
+    # 台帳の**一時ファイルの場所にフォルダ**。読むときは「まだ無い」で、書くときに初めて失敗する。
     # （台帳そのものをフォルダにすると、読む段階で止まって保存の失敗まで届かない）
-    (tmp_path / "state").write_text("", encoding="utf-8")
+    # **親の `state/` は壊さない。** 壊すと隣の `runs.jsonl` の追記も落ちて、終了コード 1 の理由が2つになる
+    # ——台帳の失敗を黙らせても 1 のままで、このテストが守れなくなる（2026-10-07 に素通りで見つかった）。
+    (tmp_path / "state" / "seen.json.tmp").mkdir(parents=True)
     world = _World()
     code = _main(tmp_path, world)
     assert code == 1
     assert "台帳" in world.line.bodies[0]
+    assert len(_recorded(tmp_path)) == 1  # 記録は書けている＝1 の理由は台帳だけ
 
 
 def test_secrets_never_reach_the_screen(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -858,3 +865,173 @@ def test_gemini_caller_asks_for_the_summary_schema_with_the_configured_model(mon
         "model": "gemini-test",
         "api_key": GEMINI_KEY,  # 例外の文言からキーを伏せるのに使う
     }
+
+
+# ---------------------------------------------------------------------------
+# 週次まとめ（K・DESIGN 10-1）
+# ---------------------------------------------------------------------------
+
+WEEK_AGO = datetime(2026, 9, 15, 22, 0, 3)  # AT（09-22 21:05）の7日前。時刻は AT より遅い
+
+
+def _runs_path(tmp_path: Path) -> Path:
+    return tmp_path / "state" / "runs.jsonl"
+
+
+def _history(tmp_path: Path, *runs: weekly.Run) -> None:
+    for run in runs:
+        weekly.append(_runs_path(tmp_path), run)
+
+
+def _old_run(at: datetime = WEEK_AGO, *, sent: bool = False) -> weekly.Run:
+    facts = weekly.Facts(sources=(("qiita", fetch.OK), ("zenn", fetch.OK)), summarized=1, verdicts=(("confirmed", 1),), cut_in_tie=False)
+    return weekly.Run(at=at, run_id=f"{at:%Y%m%d-%H%M%S}", level=notify.NORMAL, facts=facts, weekly=sent)
+
+
+def _recorded(tmp_path: Path) -> list[weekly.Run]:
+    loaded = weekly.load(_runs_path(tmp_path))
+    assert loaded.error is None and loaded.bad == 0
+    return list(loaded.runs)
+
+
+def test_each_run_is_recorded(tmp_path: Path) -> None:
+    world = _World()
+    assert _main(tmp_path, world) == 0
+
+    [run] = _recorded(tmp_path)
+    assert run.at == AT
+    assert run.run_id == RUN_ID
+    assert run.level == notify.NORMAL
+    assert run.facts.sources == (("qiita", fetch.OK), ("zenn", fetch.OK))
+    assert run.facts.summarized == 1
+    assert run.facts.cut_in_tie is False
+    assert run.weekly is False
+    assert "【週のまとめ】" not in world.line.bodies[0]  # 記録を始めた日には出さない
+
+
+def test_dry_run_and_trial_inbox_are_not_recorded(tmp_path: Path) -> None:
+    """試しの回を本番の数字に混ぜない（台帳と同じ理由）。"""
+    trial = tmp_path / "trial"
+    trial.mkdir()
+    _main(tmp_path, _World(), "--dry-run")
+    _main(tmp_path, _World(), "--inbox", str(trial))
+    assert not _runs_path(tmp_path).exists()
+
+
+def test_run_that_stopped_midway_is_recorded_as_abnormal(tmp_path: Path) -> None:
+    """**異常の回こそ数えたい。** 中身は分からないので UNKNOWN。"""
+    assert _main(tmp_path, _World(call_raises=TimeoutError("read timed out"))) == 1
+    [run] = _recorded(tmp_path)
+    assert run.level == notify.ABNORMAL
+    assert run.facts == weekly.UNKNOWN
+
+
+def test_no_notify_run_is_recorded_but_the_summary_is_not_marked(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _history(tmp_path, _old_run())
+    _main(tmp_path, _World(), "--no-notify")
+    assert "【週のまとめ】" in capsys.readouterr().out  # 画面には出る
+    assert _recorded(tmp_path)[-1].weekly is False  # 送っていないので「出した」にしない
+
+
+def test_summary_is_added_to_the_end_of_the_message_after_seven_days(tmp_path: Path) -> None:
+    """**日付の差**で7日。WEEK_AGO は AT より時刻が遅いので、時刻の差では7日に足りない。"""
+    _history(tmp_path, _old_run())
+    world = _World()
+    assert _main(tmp_path, world) == 0
+
+    [body] = world.line.bodies
+    head, summary = body.split("\n\n【週のまとめ】")
+    assert head.startswith("【scout】正常｜")
+    assert summary.startswith("09-15〜09-22（8日）")
+    assert "・走った日 2/8（走らなかった日: 09-16・09-17・09-18・09-19・09-20・09-21）" in summary
+    assert _recorded(tmp_path)[-1].weekly is True
+
+
+def test_next_week_starts_after_the_summary_that_was_sent(tmp_path: Path) -> None:
+    _history(tmp_path, _old_run(datetime(2026, 9, 8, 22, 0)), _old_run(WEEK_AGO, sent=True))
+    world = _World()
+    _main(tmp_path, world)
+    assert "【週のまとめ】09-16〜09-22（7日）" in world.line.bodies[0]
+
+
+def test_summary_is_not_marked_when_line_fails(tmp_path: Path) -> None:
+    """送れなかった週を「出した」にすると、その週が消える。翌日もう一度出す。"""
+    _history(tmp_path, _old_run())
+    world = _World(line_status=500)
+    assert _main(tmp_path, world) == 1
+    assert "【週のまとめ】" in world.line.bodies[0]
+    assert _recorded(tmp_path)[-1].weekly is False
+
+
+def test_summary_is_not_marked_when_the_message_was_cut(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**異常の回は本文が長く、末尾から切られる。** 切れたまとめを「出した」にしない。"""
+    _history(tmp_path, _old_run())
+    monkeypatch.setattr(cli, "LINE_TEXT_LIMIT", 300)
+    world = _World()
+    _main(tmp_path, world)
+    assert "【週のまとめ】" not in world.line.bodies[0]
+    assert _recorded(tmp_path)[-1].weekly is False
+
+
+def test_unreadable_history_is_in_the_message_and_failing_to_record_exits_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """記録の場所がフォルダ＝読めず、書けない。**通知は送り、終了コードで知らせる。**"""
+    _runs_path(tmp_path).mkdir(parents=True)
+    world = _World()
+    assert _main(tmp_path, world) == 1
+    assert len(world.line.bodies) == 1
+    assert "【週のまとめ】記録を読めなかった" in world.line.bodies[0]
+    assert "runs.jsonl" in capsys.readouterr().err
+
+
+def test_unreadable_history_notice_is_not_a_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """読めない記録の知らせは**まとめではない**。追記はできても「出した」にしない。
+
+    読めないのに書ける状態は実物では作りにくい（化けた行は1行ずつ数える）ので、読む側だけ差し替える。
+    """
+    monkeypatch.setattr(cli.weekly, "load", lambda path: weekly.Loaded(runs=(), bad=0, error="OSError（runs.jsonl）"))
+    world = _World()
+    assert _main(tmp_path, world) == 0
+    assert "【週のまとめ】記録を読めなかった" in world.line.bodies[0]
+    last = _runs_path(tmp_path).read_bytes().splitlines()[-1]
+    assert json.loads(last)["weekly"] is False
+
+
+@pytest.mark.parametrize("broken", ["load", "due", "compose"])
+def test_a_broken_summary_never_stops_the_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str) -> None:
+    """**まとめは添え物。** 作れなくても毎回の1通は必ず送る（2026-10-07 レビュー HIGH）。
+    作れなかったことは本文に出し、「出した」にはしない。"""
+    _history(tmp_path, _old_run())
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise TypeError("can't compare offset-naive and offset-aware datetimes")
+
+    monkeypatch.setattr(cli.weekly, broken, boom)
+    world = _World()
+    code = _main(tmp_path, world)
+
+    assert len(world.line.bodies) == 1
+    assert world.line.bodies[0].startswith("【scout】正常｜")
+    assert "【週のまとめ】作れなかった（TypeError）" in world.line.bodies[0]
+    assert code == 1  # 黙らない。タスクスケジューラ（と vault_doctor）に知らせる
+    assert json.loads(_runs_path(tmp_path).read_bytes().splitlines()[-1])["weekly"] is False
+
+
+def test_a_broken_facts_count_is_not_a_false_abnormal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`weekly.facts` は台帳を保存した**後**に走る。そこで落ちて外側の「途中で止まった」になると、
+    「台帳は触っていない」という嘘の異常が届く（2026-10-07 レビュー HIGH の付記）。"""
+
+    def boom(**kwargs: object) -> None:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(cli.weekly, "facts", boom)
+    world = _World()
+    code = _main(tmp_path, world)
+
+    assert world.line.bodies[0].startswith("【scout】正常｜")
+    assert "途中で止まった" not in world.line.bodies[0]
+    assert "週次: 中身を数えられなかった（ValueError）" in world.line.bodies[0]
+    assert _state(tmp_path).seen  # 台帳は進んでいる
+    assert _recorded(tmp_path)[-1].facts == weekly.UNKNOWN
+    assert code == 1

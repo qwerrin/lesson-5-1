@@ -29,7 +29,7 @@
 
 ====  ===================================================================
 0     正常・注意（**注意で毎日赤くしない**。本物の異常に慣れてしまう）
-1     異常・LINE に送れなかった・台帳を更新できなかった
+1     異常・LINE に送れなかった・台帳を更新できなかった・記録（`runs.jsonl`）に書けなかった
 2     設定・台帳・資格情報の誤り（外へ出る前に止めた）
 ====  ===================================================================
 
@@ -44,6 +44,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import functools
 import json
 import os
@@ -71,11 +72,14 @@ import rank  # noqa: E402
 import split  # noqa: E402
 import summarize  # noqa: E402
 import verify_source  # noqa: E402
+import weekly  # noqa: E402
 from common import env_file, gemini_client, line_auth, line_send  # noqa: E402
 
 DEFAULT_CONFIG = _HERE / "config.toml"
 #: **git では追跡しない**（`.gitignore`）。追跡すると、クローンした人が「他人がもう見た」から始まる。
 DEFAULT_STATE = _HERE / "state" / "seen.json"
+#: 1回1行の記録（週次まとめ・DESIGN 10-1）。**台帳の隣**に置く——`--state` を差し替えたテストや試しが本番の記録に混ざらない。
+RUNS_FILENAME = "runs.jsonl"
 
 #: 1回の HTTP 呼び出しの待ち時間（秒）。**`build_session` は timeout を持たない**ので、ここで足す。
 TIMEOUT = 30
@@ -424,20 +428,44 @@ def main(
             _say(reason, sys.stderr)
             return EXIT_ABNORMAL
         health = notify.Health(level=notify.ABNORMAL, reasons=(reason,))
-        result = _Result(health=health, emitted=None, emit_error="途中で止まったので書いていない", ledger_failed=False)
+        result = _Result(
+            health=health,
+            emitted=None,
+            emit_error="途中で止まったので書いていない",
+            ledger_failed=False,
+            facts=weekly.UNKNOWN,
+            facts_failed=False,
+        )
     if result is None:
         return EXIT_OK  # --dry-run
 
-    body = fit_for_line(
-        notify.compose(
-            at=at,
-            run_id=run_id,
-            health=result.health,
-            stages=stages.lines,
-            emitted=result.emitted,
-            emit_error=result.emit_error,
-        )
+    # ---- 週次まとめ。**試しの場所に書いた回は記録しない**（台帳と同じ理由）。
+    record = args.inbox is None
+    runs_path = args.state.parent / RUNS_FILENAME
+    run = weekly.Run(at=at, run_id=run_id, level=result.health.level, facts=result.facts, weekly=False)
+    history: weekly.Loaded | None = None
+    summary: str | None = None
+    summary_failed = False
+    if record:
+        try:
+            history = weekly.load(runs_path)
+            if weekly.due(history, run):
+                summary = weekly.compose(history, run)
+        except Exception as e:  # noqa: BLE001 - **まとめは添え物。** 作れなくても毎回の1通は必ず送る
+            # 黙らない。本文に出し、終了コードでも知らせる。「出した」にはしない（history を捨てる）。
+            history, summary_failed = None, True
+            summary = f"【週のまとめ】作れなかった（{type(e).__name__}）"
+
+    text = notify.compose(
+        at=at,
+        run_id=run_id,
+        health=result.health,
+        stages=stages.lines,
+        emitted=result.emitted,
+        emit_error=result.emit_error,
     )
+    # **末尾に足す。** 通数を増やさない。異常の回は末尾から切られるので、残ったかを後で確かめる。
+    body = fit_for_line(text if summary is None else f"{text}\n\n{summary}")
 
     # ---- 通知。**先に送ってから画面に出す**——画面に書けない字があっても、送信まで届くように。
     sent = True
@@ -455,7 +483,27 @@ def main(
     _say("-" * 60)
     _say(report, sys.stdout if sent else sys.stderr)
 
-    if result.health.level == notify.ABNORMAL or not sent or result.ledger_failed:
+    record_failed = False
+    if record:
+        # **送れて、切られずに残ったときだけ**「出した」にする。読めなかった記録の知らせは、まとめではない。
+        delivered = (
+            summary is not None
+            and history is not None
+            and history.error is None
+            and sent
+            and not args.no_notify
+            and summary in body
+        )
+        try:
+            weekly.append(runs_path, dataclasses.replace(run, weekly=delivered))
+        except OSError as e:
+            # 通知はもう送ったあと。終了コードでタスクスケジューラ（と vault_doctor）に知らせる。
+            record_failed = True
+            _say(f"記録 {runs_path} に書けなかった: {type(e).__name__}: {e}", sys.stderr)
+
+    if result.health.level == notify.ABNORMAL or not sent or result.ledger_failed or record_failed:
+        return EXIT_ABNORMAL
+    if summary_failed or result.facts_failed:
         return EXIT_ABNORMAL
     return EXIT_OK
 
@@ -480,6 +528,9 @@ class _Result:
     emitted: emit.Emitted | None
     emit_error: str | None
     ledger_failed: bool
+    facts: weekly.Facts
+    #: 週次まとめの中身を数えられなかった。**本体の判定は変えない**（数えるのは台帳を保存した後）。
+    facts_failed: bool
 
 
 def _run(
@@ -545,7 +596,22 @@ def _run(
             stages.add(f"台帳: 更新できなかった（{type(e).__name__}: {e}）")
 
     health = notify.judge(harvest=harvest, digest=digest, audit=audit, emitted=emitted, emit_error=emit_error)
-    return _Result(health=health, emitted=emitted, emit_error=emit_error, ledger_failed=ledger_failed)
+    # **台帳を保存した後**に数える。ここで落ちて外側の「途中で止まった」になると、
+    # 「台帳は触っていない」という嘘の異常が届く。
+    facts_failed = False
+    try:
+        facts = weekly.facts(harvest=harvest, ranking=ranking, digest=digest, audit=audit)
+    except Exception as e:  # noqa: BLE001 - 添え物で本体の結果を書き換えない
+        facts, facts_failed = weekly.UNKNOWN, True
+        stages.add(f"週次: 中身を数えられなかった（{type(e).__name__}）")
+    return _Result(
+        health=health,
+        emitted=emitted,
+        emit_error=emit_error,
+        ledger_failed=ledger_failed,
+        facts=facts,
+        facts_failed=facts_failed,
+    )
 
 
 def fit_for_line(text: str, *, limit: int | None = None) -> str:

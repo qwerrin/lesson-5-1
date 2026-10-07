@@ -6,6 +6,7 @@
 使い方::
 
     .venv\\Scripts\\python.exe scout\\tools\\mutate.py
+    .venv\\Scripts\\python.exe scout\\tools\\mutate.py --target scout/weekly.py   # 触った段だけ
 
 仕組みは `figset/tools/mutate.py` と同じ。リポジトリを一時ディレクトリへ写し、
 **写した側だけ**を壊す。数え方も同じで、**pytest の終了コード 1 だけを kill と数え、
@@ -57,6 +58,7 @@ VERIFY = "scout/verify_source.py"
 EMIT = "scout/emit.py"
 NOTIFY = "scout/notify.py"
 CLI = "scout/cli.py"
+WEEKLY = "scout/weekly.py"
 
 IGNORE = shutil.ignore_patterns(
     ".venv", ".git", "__pycache__", ".pytest_cache", ".pytest_tmp",
@@ -2449,14 +2451,14 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         CLI,
         "**異常でも 0 で終わる**",
-        "    if result.health.level == notify.ABNORMAL or not sent or result.ledger_failed:",
-        "    if not sent or result.ledger_failed:",
+        "    if result.health.level == notify.ABNORMAL or not sent or result.ledger_failed or record_failed:",
+        "    if not sent or result.ledger_failed or record_failed:",
     ),
     (
         CLI,
         "**注意でも 1 で終わる**（毎日赤くなる）",
-        "    if result.health.level == notify.ABNORMAL or not sent or result.ledger_failed:",
-        "    if result.health.level != notify.NORMAL or not sent or result.ledger_failed:",
+        "    if result.health.level == notify.ABNORMAL or not sent or result.ledger_failed or record_failed:",
+        "    if result.health.level != notify.NORMAL or not sent or result.ledger_failed or record_failed:",
     ),
     (
         CLI,
@@ -2538,6 +2540,124 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "client, prompt=prompt, schema=summarize.SCHEMA, model=model, api_key=api_key",
         "client, prompt=prompt, schema=summarize.SCHEMA, api_key=api_key",
     ),
+    # ---------------------------------------------------------------- 週次まとめの配線（DESIGN 10-1）
+    (CLI, "試しの回も記録する", "    record = args.inbox is None", "    record = True"),
+    (
+        CLI,
+        "記録を台帳の隣に置かない",
+        "    runs_path = args.state.parent / RUNS_FILENAME",
+        "    runs_path = DEFAULT_STATE.parent / RUNS_FILENAME",
+    ),
+    (CLI, "7日たっていなくてもまとめを出す", "            if weekly.due(history, run):", "            if True:"),
+    (CLI, "まとめを作れなくても終了コード 0", "            history, summary_failed = None, True", "            history, summary_failed = None, False"),
+    (CLI, "まとめを作れなかった回を「出した」にしうる", "            history, summary_failed = None, True", "            summary_failed = True"),
+    (CLI, "まとめの失敗を終了コードに入れない", "    if summary_failed or result.facts_failed:", "    if result.facts_failed:"),
+    (CLI, "中身の失敗を終了コードに入れない", "    if summary_failed or result.facts_failed:", "    if summary_failed:"),
+    (CLI, "中身を数えられなくても失敗にしない", "        facts, facts_failed = weekly.UNKNOWN, True", "        facts, facts_failed = weekly.UNKNOWN, False"),
+    (CLI, "中身を数えられなかったことを書かない", 'stages.add(f"週次: 中身を数えられなかった（{type(e).__name__}）")', "pass"),
+    (
+        CLI,
+        "まとめを本文に足さない",
+        'body = fit_for_line(text if summary is None else f"{text}\\n\\n{summary}")',
+        "body = fit_for_line(text)",
+    ),
+    (CLI, "送れなかったのに「出した」にする", "            and sent\n", ""),
+    (CLI, "--no-notify でも「出した」にする", "            and not args.no_notify\n", ""),
+    (CLI, "切れたまとめを「出した」にする", "            and summary in body\n", ""),
+    (CLI, "読めない記録の知らせを「出した」にする", "            and history.error is None\n", ""),
+    (
+        CLI,
+        "「出した」を記録に残さない",
+        "weekly.append(runs_path, dataclasses.replace(run, weekly=delivered))",
+        "weekly.append(runs_path, run)",
+    ),
+    (CLI, "記録に書けなくても終了コード 0", "            record_failed = True", "            record_failed = False"),
+    (
+        CLI,
+        "記録の失敗を終了コードに入れない",
+        "or result.ledger_failed or record_failed:",
+        "or result.ledger_failed:",
+    ),
+    (
+        CLI,
+        "判定を記録しない",
+        "run = weekly.Run(at=at, run_id=run_id, level=result.health.level,",
+        "run = weekly.Run(at=at, run_id=run_id, level=notify.NORMAL,",
+    ),
+    (
+        CLI,
+        "途中で止まった回に中身があることにする",
+        "            facts=weekly.UNKNOWN,",
+        "            facts=weekly.Facts(sources=(), summarized=0, verdicts=(), cut_in_tie=False),",
+    ),
+    (
+        CLI,
+        "各段の中身を記録しない",
+        "    facts = weekly.facts(harvest=harvest, ranking=ranking, digest=digest, audit=audit)",
+        "    facts = weekly.UNKNOWN",
+    ),
+    # ---------------------------------------------------------------- 週次まとめ：1回分の中身
+    (WEEKLY, "取得元の状態を記録しない", "        sources=tuple((r.source, r.status) for r in harvest.results),", "        sources=(),"),
+    (WEEKLY, "要約の数を記録しない", "        summarized=len(digest.done),", "        summarized=0,"),
+    (WEEKLY, "照合の判定を記録しない", "        verdicts=tuple(verdicts.items()),", "        verdicts=(),"),
+    (WEEKLY, "切れ目を記録しない", "        cut_in_tie=cut_in_tie(ranking),", "        cut_in_tie=False,"),
+    (WEEKLY, "ミュートも切れ目に混ぜる", " if d.reason == rank.OVER_CAP]", "]"),
+    (WEEKLY, "上限に届かない回で落ちる", "    if not ranking.picked or not over:", "    if not ranking.picked:"),
+    (WEEKLY, "同点でなくても同点にする", "== max(over)", ">= max(over)"),
+    # ---------------------------------------------------------------- 週次まとめ：読み書き
+    (WEEKLY, "追記せず上書きする", 'with path.open("a+b") as f:', 'with path.open("w+b") as f:'),
+    (WEEKLY, "切れた行の後に改行を足さない", '            if f.read(1) != b"\\n":', "            if False:"),
+    (WEEKLY, "空のファイルの末尾を読もうとする", "        if f.tell() > 0:", "        if True:"),
+    (WEEKLY, "置き場のフォルダを作らない", "    path.parent.mkdir(parents=True, exist_ok=True)\n", ""),
+    (WEEKLY, "無いファイルを読もうとする", "    if not path.exists():\n        return Loaded(runs=(), bad=0, error=None)\n", ""),
+    (WEEKLY, "化けた行を握らない", "        except UnicodeDecodeError:", "        except KeyError:"),
+    (WEEKLY, "行に割らない", '    for raw in data.split(b"\\n"):', "    for raw in [data]:"),
+    (WEEKLY, "読めない理由にパスを載せる", 'error=f"{type(e).__name__}（{path.name}）"', 'error=f"{type(e).__name__}: {e}"'),
+    (WEEKLY, "時差付きの時刻を通す", "        if at.tzinfo is not None:", "        if False:"),
+    (WEEKLY, "空行を壊れた行に数える", "        if not raw.strip():\n            continue\n", ""),
+    (WEEKLY, "壊れた行を数えない", "            bad += 1", "            bad += 0"),
+    (WEEKLY, "時刻を落として書く", '"at": run.at.isoformat(),', '"at": run.at.date().isoformat(),'),
+    (WEEKLY, "「出した」を書かない", '"weekly": run.weekly,', '"weekly": False,'),
+    (WEEKLY, "取得元を書かない", '"sources": None if f.sources is None else dict(f.sources),', '"sources": None,'),
+    (WEEKLY, "照合を書かない", '"verdicts": None if f.verdicts is None else dict(f.verdicts),', '"verdicts": None,'),
+    (WEEKLY, "run-id の型を見ない", "if not isinstance(run_id, str) or not isinstance(level, str)", "if not isinstance(level, str)"),
+    (WEEKLY, "判定の型を見ない", "or not isinstance(level, str) or not isinstance(sent, bool)", "or not isinstance(sent, bool)"),
+    (WEEKLY, "「出した」の型を見ない", " or not isinstance(sent, bool):", ":"),
+    (WEEKLY, "壊れた取得元を通す", "    if sources is False or verdicts is False:", "    if verdicts is False:"),
+    (WEEKLY, "壊れた照合を通す", "    if sources is False or verdicts is False:", "    if sources is False:"),
+    (WEEKLY, "壊れた要約数を通す", "    if summarized is not None and not _count(summarized):", "    if False:"),
+    (WEEKLY, "壊れた切れ目を通す", "    if cut is not None and not isinstance(cut, bool):", "    if False:"),
+    (WEEKLY, "一覧の取得元で落ちる", "    if not isinstance(value, dict):\n        return False\n", ""),
+    (WEEKLY, "数でない判定数を通す", "        if kind is int and not _count(v):", "        if False:"),
+    (WEEKLY, "文字でない状態を通す", "        if kind is str and not isinstance(v, str):", "        if False:"),
+    (WEEKLY, "真偽値を数として通す", " and not isinstance(value, bool) and value >= 0", " and value >= 0"),
+    (WEEKLY, "負の数を通す", " and not isinstance(value, bool) and value >= 0", " and not isinstance(value, bool)"),
+    # ---------------------------------------------------------------- 週次まとめ：区切りと本文
+    (WEEKLY, "読めない記録を黙る", "    if loaded.error is not None:\n        return True", "    if loaded.error is not None:\n        return False"),
+    (WEEKLY, "7日ちょうどで出さない", ".days >= PERIOD_DAYS", ".days > PERIOD_DAYS"),
+    (WEEKLY, "時刻の差で数える", "(run.at.date() - start.at.date()).days", "(run.at - start.at).days"),
+    (WEEKLY, "読めない理由を書かない", "記録を読めなかった（{_line(loaded.error)}）", "記録を読めなかった"),
+    (WEEKLY, "出した日を次の週にも入れる", "start.at.date() + timedelta(days=1)", "start.at.date() + timedelta(days=0)"),
+    (WEEKLY, "前の週の回も数える", "        older = [r for r in loaded.runs if r.at > start.at]", "        older = list(loaded.runs)"),
+    (WEEKLY, "最後の日を数えない", "(run.at.date() - first_day).days + 1)]", "(run.at.date() - first_day).days)]"),
+    (WEEKLY, "途中で止まった回を中身ありにする", "    known = [r.facts for r in window if r.facts != UNKNOWN]", "    known = [r.facts for r in window]"),
+    (WEEKLY, "途中で止まった回を書かない", "    if stopped:", "    if False:"),
+    (WEEKLY, "切れ目の回数を全部にする", "回: {sum(flat)}/{len(flat)}", "回: {len(flat)}/{len(flat)}"),
+    (WEEKLY, "壊れた行を0にする", "記録 {loaded.bad} 行", "記録 0 行"),
+    (WEEKLY, "最初に出したまとめを起点にする", "        return max(sent, key=lambda r: r.at)", "        return min(sent, key=lambda r: r.at)"),
+    (WEEKLY, "最後の記録を起点にする", "    return min(runs, key=lambda r: r.at) if runs else None", "    return max(runs, key=lambda r: r.at) if runs else None"),
+    (WEEKLY, "走らなかった日を全部並べる", "missed[:MISSED_SHOWN]", "missed"),
+    (WEEKLY, "残りが無くても「ほか」を出す", "if rest > 0 else ''", "if True else ''"),
+    (WEEKLY, "知らない判定を落とす", "    if unknown:\n        # **知らない判定を落とさない。**", "    if False:\n        # **知らない判定を落とさない。**"),
+    (
+        WEEKLY,
+        "知らない取得の状態を落とす",
+        '        text += "".join(f"・{_line(status)} {n}" for status, n in counts.items())',
+        '        text += ""',
+    ),
+    (WEEKLY, "取得の記録が無いと空にする", 'or "記録なし")', 'or "")'),
+    (WEEKLY, "知らない照合の判定を落とす", '    if unknown:\n        parts.append(f"分からない {unknown}")\n    return f"・要約', '    if False:\n        parts.append(f"分からない {unknown}")\n    return f"・要約'),
+    (WEEKLY, "要約の数を回数にする", "    summarized = sum(f.summarized or 0 for f in known)", "    summarized = len(known)"),
 ]
 
 
@@ -2560,10 +2680,26 @@ def run_tests(work: Path) -> tuple[int, str]:
     return proc.returncode, tail
 
 
+def select(argv: list[str]) -> list[tuple[str, str, str, str]] | None:
+    """`--target scout/weekly.py` を何回でも。**知らない対象は止める**——綴りを間違えると0件で「素通り0」になる。"""
+    targets = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--target"]
+    if len(targets) != argv.count("--target") or len(argv) != 2 * len(targets):
+        return None
+    known = {m[0] for m in MUTATIONS}
+    if not set(targets) <= known:
+        return None
+    return [m for m in MUTATIONS if not targets or m[0] in targets]
+
+
 def main() -> int:
     if not PYTHON.exists():
         print(f"仮想環境の Python が見つかりません: {PYTHON}", file=sys.stderr)
         return 1
+
+    mutations = select(sys.argv[1:])
+    if mutations is None:
+        print(f"使い方: mutate.py [--target <対象>]...  対象: {sorted({m[0] for m in MUTATIONS})}", file=sys.stderr)
+        return 2
 
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / "repo"
@@ -2580,7 +2716,7 @@ def main() -> int:
         not_found: list[str] = []
         errored: list[str] = []
 
-        for index, (target, label, before, after) in enumerate(MUTATIONS, start=1):
+        for index, (target, label, before, after) in enumerate(mutations, start=1):
             path = work / target
             original = path.read_text(encoding="utf-8", newline="")
             haystack = original.replace("\r\n", "\n")
@@ -2601,7 +2737,7 @@ def main() -> int:
                 errored.append(f"{index:3}. {label}（exit {code}）\n      {tail}")
             path.write_text(original, encoding="utf-8", newline="")
 
-        print(f"壊した箇所: {len(MUTATIONS)}")
+        print(f"壊した箇所: {len(mutations)}")
         print(f"  kill（テストが落ちた）: {len(killed)}")
         print(f"  素通り: {len(survived)}")
         print(f"  置換先なし: {len(not_found)}")

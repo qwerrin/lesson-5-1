@@ -4,7 +4,8 @@
 沈黙の意味は毎日の1通で確定している。毎日の1通に言えないのは次の2つ:
 
 - **走らなかった日。** 届かなかった日は無音のまま
-- **日をまたいだ傾向。** 取得元が続けて空・照合の誤報の数・物差しが平らに戻っていないか（U22）
+- **日をまたいだ傾向。** 取得元が続けて空・照合の誤報の数・物差しが平らに戻っていないか（U22）・
+  関心の語がその日の記事に当たっているか（U24）
 
 記録は追記だけ
 --------------------------------------------------------------------------
@@ -66,11 +67,14 @@ class Facts:
     summarized: int | None
     #: (判定, 件数)。**知らない判定も落とさない。**
     verdicts: tuple[tuple[str, int], ...] | None
-    cut_in_tie: bool | None
+    #: 物差しが平ら（1点以上の同点で上限が切れた）。
+    tie_scored: bool | None
+    #: 点0の記事が上限の枠に入った（関心に当たる記事が上限より少なかった）。
+    short_of_hits: bool | None
 
 
 #: 途中で止まった回。判定（異常）だけが分かっている。
-UNKNOWN = Facts(sources=None, summarized=None, verdicts=None, cut_in_tie=None)
+UNKNOWN = Facts(sources=None, summarized=None, verdicts=None, tie_scored=None, short_of_hits=None)
 
 
 @dataclass(frozen=True)
@@ -103,21 +107,30 @@ def facts(*, harvest: fetch.Harvest, ranking: rank.Ranking, digest: Digest, audi
         sources=tuple((r.source, r.status) for r in harvest.results),
         summarized=len(digest.done),
         verdicts=tuple(verdicts.items()),
-        cut_in_tie=cut_in_tie(ranking),
+        tie_scored=tie_scored(ranking),
+        short_of_hits=short_of_hits(ranking),
     )
 
 
-def cut_in_tie(ranking: rank.Ranking) -> bool:
-    """**選んだ最後の1件と、上限で外れた最初の1件が同じ点**か（U22）。
+def tie_scored(ranking: rank.Ranking) -> bool:
+    """**選んだ最後の1件と、上限で外れた最初の1件が、1点以上の同じ点**か（U22）。
 
-    同点なら、その回は点ではなく、いいねや日付で選ばれている。
+    同点なら、その回は点ではなく、いいねや日付で選ばれている＝物差しが平ら。
+    **点0同士の切れ目は数えない**（U24）——当たった記事は全部選ばれていて、残りの枠を埋めただけ。
+    それは `short_of_hits` が数える。1語で両方を数えると、逆の状態が同じ顔になる。
     上限に届いていない回は切れ目が無いので `False`。ミュートは点が無いので混ぜない。
     """
     # 上限で外れた記事の点は `rank` が `Scored.score`（整数）から写す。`None` はミュートだけで、理由で弾く。
     over = [d.score for d in ranking.dropped if d.reason == rank.OVER_CAP]
     if not ranking.picked or not over:
         return False
-    return min(s.score for s in ranking.picked) == max(over)  # type: ignore[type-var]
+    last = min(s.score for s in ranking.picked)
+    return last >= 1 and last == max(over)  # type: ignore[type-var]
+
+
+def short_of_hits(ranking: rank.Ranking) -> bool:
+    """**点0の記事が上限の枠に入った**か（U24）。関心の語がその日の記事に当たっていない。"""
+    return any(s.score < 1 for s in ranking.picked)
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +191,8 @@ def _to_json(run: Run) -> dict[str, Any]:
             "sources": None if f.sources is None else dict(f.sources),
             "summarized": f.summarized,
             "verdicts": None if f.verdicts is None else dict(f.verdicts),
-            "cut_in_tie": f.cut_in_tie,
+            "tie_scored": f.tie_scored,
+            "short_of_hits": f.short_of_hits,
         },
         "weekly": run.weekly,
     }
@@ -211,14 +225,22 @@ def _facts_from_json(raw: Any) -> Facts | None:
     sources = _pairs(raw["sources"], str)
     verdicts = _pairs(raw["verdicts"], int)
     summarized = raw["summarized"]
-    cut = raw["cut_in_tie"]
+    if "tie_scored" not in raw and "short_of_hits" not in raw and "cut_in_tie" in raw:
+        # **2026-10-07 の1行だけがこの形**（U24 の前・今は書かない鍵）。当時の true は2つの状態を
+        # 同じ顔にしていたので、どちらとも言えない。前の行は書き換えない。
+        # 新しい鍵が1つでもあればそちらを読む——確かな値を「分からない」で捨てない。
+        if raw["cut_in_tie"] is not None and not isinstance(raw["cut_in_tie"], bool):
+            return None
+        tie, short = None, None
+    else:
+        tie, short = raw["tie_scored"], raw["short_of_hits"]
     if sources is False or verdicts is False:
         return None
     if summarized is not None and not _count(summarized):
         return None
-    if cut is not None and not isinstance(cut, bool):
+    if any(v is not None and not isinstance(v, bool) for v in (tie, short)):
         return None
-    return Facts(sources=sources, summarized=summarized, verdicts=verdicts, cut_in_tie=cut)
+    return Facts(sources=sources, summarized=summarized, verdicts=verdicts, tie_scored=tie, short_of_hits=short)
 
 
 def _pairs(value: Any, kind: type) -> tuple[tuple[str, Any], ...] | None | bool:
@@ -282,8 +304,10 @@ def compose(loaded: Loaded, run: Run) -> str:
         lines.append(f"・中身の記録が無い回 {stopped}（途中で止まった・数えられなかった）")
     lines.append(_source_line(known))
     lines.append(_verdict_line(known))
-    flat = [f.cut_in_tie for f in known if f.cut_in_tie is not None]
-    lines.append(f"・上限の切れ目が同点の中にあった回: {sum(flat)}/{len(flat)}")
+    flat = [f.tie_scored for f in known if f.tie_scored is not None]
+    lines.append(f"・物差しが平ら（点のある記事の同点で上限が切れた）回: {sum(flat)}/{len(flat)}")
+    short = [f.short_of_hits for f in known if f.short_of_hits is not None]
+    lines.append(f"・点0の記事が上限の枠に入った回（関心に当たる記事が上限より少ない）: {sum(short)}/{len(short)}")
     lines.append(f"・読めなかった記録 {loaded.bad} 行")
     return "\n".join(lines)
 

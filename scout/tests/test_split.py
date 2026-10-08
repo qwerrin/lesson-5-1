@@ -75,7 +75,8 @@ def _kept(url: str, *, source: str = "qiita", body: str | None = LONG) -> dedupe
     return dedupe.Kept(article=article, key=dedupe.normalize(url))
 
 
-def _scored(url: str, *, score: int = 0, **kwargs: object) -> rank.Scored:
+def _scored(url: str, *, score: int = 1, **kwargs: object) -> rank.Scored:
+    # **既定は点1。** 点0 は「関心の語に1つも当たらない」で、要約へ回らない（U24）。
     return rank.Scored(kept=_kept(url, **kwargs), score=score, hits=())  # type: ignore[arg-type]
 
 
@@ -163,6 +164,39 @@ def test_点の無い記事は本文があっても要約へ回さない() -> No
 
     assert got.summarize == ()
     assert [h.reason for h in got.headline] == [split.UNRANKED]
+
+
+def test_点0の記事は本文があっても見出しだけ() -> None:
+    """**関心の語に1つも当たらない記事に、要約の課金を使わない**（U24）。
+
+    2026-10-07 は当たった記事が5件だけで、上限10件の残り5枠を点0の記事がいいね順で埋めた。
+    **捨てはしない**——見出しとリンクは出す（「点が低いことは捨てる理由にならない」）。
+    """
+    got = split.split(
+        _ranking(picked=(_scored("https://q.com/hit"), _scored("https://q.com/zero", score=0))),
+        summarizable=ALLOWED,
+    )
+
+    assert _urls(got.summarize) == ["https://q.com/hit"]
+    assert [(h.kept.article.url, h.reason, h.score) for h in got.headline] == [
+        ("https://q.com/zero", split.NO_HITS, 0)
+    ]
+
+
+def test_点0より取得元と本文の理由を先に見る() -> None:
+    """**理由は1つに決める。** 取得元や本文で止まるなら、点は直し方を変えない。"""
+    got = split.split(
+        _ranking(
+            picked=(
+                _scored("https://zenn.dev/x", source="zenn", score=0),
+                _scored("https://q.com/short", body="短い", score=0),
+                _scored("https://q.com/none", body=None, score=0),
+            )
+        ),
+        summarizable=ALLOWED,
+    )
+
+    assert [h.reason for h in got.headline] == [split.NOT_SUMMARIZABLE, split.TOO_SHORT, split.NO_BODY]
 
 
 def test_要約してよい取得元が空なら受け付けない() -> None:

@@ -13,7 +13,8 @@ B            区切りの起点は、前に出したまとめ。無ければ最�
 C            「走った日」は日付で数える。同じ日の2回目は日を増やさない
 D            **知らない判定・知らない取得の状態を落とさない。**「分からない」として数える
 E            壊れた行は捨てずに数える。ファイルごと読めなければ、そう書く
-F            上限の切れ目が同点の中にある＝選んだ最後と外れた最初が同じ点（U22）
+F            物差しが平ら＝選んだ最後と外れた最初が**1点以上の**同じ点（U22・U24）。
+             点0同士で切れたのは「関心に当たる記事が上限より少なかった」で、別の事実にする
 G            追記は1行ずつ。前の行を書き換えない
 ============ ====================================================================
 """
@@ -97,7 +98,8 @@ def _facts(**overrides: object) -> weekly.Facts:
         "sources": (("qiita", fetch.OK), ("zenn", fetch.OK)),
         "summarized": 10,
         "verdicts": ((verify_source.CONFIRMED, 10),),
-        "cut_in_tie": False,
+        "tie_scored": False,
+        "short_of_hits": False,
     }
     values.update(overrides)
     return weekly.Facts(**values)  # type: ignore[arg-type]
@@ -129,13 +131,16 @@ def test_facts_are_read_from_each_stage() -> None:
     audit = _audit(verify_source.CONFIRMED, verify_source.CONFIRMED, verify_source.MISMATCH)
     digest = summarize.Digest(done=tuple(c.summary for c in audit.checks), failed=())
 
-    # **同点の形で組む。** False の形だと、切れ目を固定の False にしても見分けがつかない。
+    # **True になる形で組む。** False の形だと、固定の False にしても見分けがつかない。
+    # 1つの `Ranking` で両方は True にならない（平らは選んだ最小が1点以上、点0の枠は選んだ中に0点）ので2つ使う。
     facts = weekly.facts(harvest=harvest, ranking=_ranking((2, 1, 1), over=(1, 0)), digest=digest, audit=audit)
+    short = weekly.facts(harvest=harvest, ranking=_ranking((1, 0), over=(0,)), digest=digest, audit=audit)
 
     assert facts.sources == (("qiita", fetch.OK), ("zenn", fetch.EMPTY))
     assert facts.summarized == 3
     assert dict(facts.verdicts or ()) == {verify_source.CONFIRMED: 2, verify_source.MISMATCH: 1}
-    assert facts.cut_in_tie is True
+    assert facts.tie_scored is True
+    assert short.short_of_hits is True
 
 
 @pytest.mark.parametrize(
@@ -144,18 +149,37 @@ def test_facts_are_read_from_each_stage() -> None:
         ((2, 1, 1), (0, 0), False),  # 境目で点が下がる＝物差しが効いている（2026-10-05 の形）
         ((2, 1, 1), (1, 0), True),  # 選んだ最後と外れた最初が同じ点
         ((1, 1, 1), (1, 1), True),  # 全員同点＝平ら（U22 の前の形）
-        ((0, 0), (0,), True),  # 全員0点も平ら
+        ((1,), (1,), True),  # 1点の同点がいちばん小さい平ら
+        # **点0同士の切れ目は平らではない**（2026-10-07 の形・U24）。当たった記事は全部選ばれていて、
+        # 残りの枠をいいねで埋めただけ。数えるのは `short_of_hits` のほう
+        ((2, 1, 0), (0,), False),
+        ((0, 0), (0,), False),
         ((2, 1), (), False),  # 上限に届いていない＝切れ目が無い
         ((), (), False),
     ],
 )
-def test_cut_in_tie(picked: tuple[int, ...], over: tuple[int, ...], expected: bool) -> None:
-    assert weekly.cut_in_tie(_ranking(picked, over)) is expected
+def test_tie_scored(picked: tuple[int, ...], over: tuple[int, ...], expected: bool) -> None:
+    assert weekly.tie_scored(_ranking(picked, over)) is expected
+
+
+@pytest.mark.parametrize(
+    ("picked", "over", "expected"),
+    [
+        ((2, 1, 0), (0,), True),  # 2026-10-07 の形：当たったのは2件、残りの枠に点0
+        ((0,), (), True),  # 上限に届いていなくても、点0が枠に入れば当たる
+        ((2, 1, 1), (1, 0), False),  # 点0は外れたほうにだけいる
+        ((0, 0), (0,), True),  # 全員0点。平らではない（`tie_scored` は False）が、こちらには当たる
+        ((1, 1), (), False),
+        ((), (), False),
+    ],
+)
+def test_short_of_hits(picked: tuple[int, ...], over: tuple[int, ...], expected: bool) -> None:
+    assert weekly.short_of_hits(_ranking(picked, over)) is expected
 
 
 def test_muted_articles_are_not_the_cut() -> None:
     """**ミュートは上限の切れ目ではない。** 点が無いので、同点の判定に混ぜない。"""
-    assert weekly.cut_in_tie(_ranking((1, 1), over=(), muted=3)) is False
+    assert weekly.tie_scored(_ranking((1, 1), over=(), muted=3)) is False
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +191,7 @@ def test_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "state" / "runs.jsonl"
     runs = [
         _run(START),
-        _run(START + timedelta(days=1), level=notify.ATTENTION, facts=_facts(cut_in_tie=True), sent=True),
+        _run(START + timedelta(days=1), level=notify.ATTENTION, facts=_facts(tie_scored=True, short_of_hits=True), sent=True),
         _run(START + timedelta(days=2), level=notify.ABNORMAL, facts=weekly.UNKNOWN),
     ]
     for run in runs:
@@ -200,26 +224,39 @@ def test_missing_file_is_empty_not_an_error(tmp_path: Path) -> None:
         '{"at": "昨日"}',
         # 形は合っているが値が違う。**1行に壊れた所は1つだけ**——2つあると、片方の検査を外しても通る
         '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": 1, "weekly": false, '
-        '"facts": {"sources": null, "summarized": null, "verdicts": null, "cut_in_tie": null}}',
+        '"facts": {"sources": null, "summarized": null, "verdicts": null, "tie_scored": null, "short_of_hits": null}}',
         '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": "yes", '
-        '"facts": {"sources": null, "summarized": null, "verdicts": null, "cut_in_tie": null}}',
+        '"facts": {"sources": null, "summarized": null, "verdicts": null, "tie_scored": null, "short_of_hits": null}}',
         '{"at": "2026-09-01T22:00:03", "run_id": 5, "level": "normal", "weekly": false, '
-        '"facts": {"sources": null, "summarized": null, "verdicts": null, "cut_in_tie": null}}',
+        '"facts": {"sources": null, "summarized": null, "verdicts": null, "tie_scored": null, "short_of_hits": null}}',
         # facts は書く側が必ず表で書く。null も読めなかった行
         '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "facts": null, "weekly": false}',
         '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "facts": [], "weekly": false}',
         '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
-        '"facts": {"sources": ["qiita"], "summarized": null, "verdicts": null, "cut_in_tie": null}}',
+        '"facts": {"sources": ["qiita"], "summarized": null, "verdicts": null, "tie_scored": null, "short_of_hits": null}}',
         '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
-        '"facts": {"sources": null, "summarized": true, "verdicts": null, "cut_in_tie": null}}',
+        '"facts": {"sources": null, "summarized": true, "verdicts": null, "tie_scored": null, "short_of_hits": null}}',
         '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
-        '"facts": {"sources": {"qiita": 1}, "summarized": null, "verdicts": null, "cut_in_tie": null}}',
+        '"facts": {"sources": {"qiita": 1}, "summarized": null, "verdicts": null, "tie_scored": null, "short_of_hits": null}}',
         '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
-        '"facts": {"sources": null, "summarized": -1, "verdicts": null, "cut_in_tie": null}}',
+        '"facts": {"sources": null, "summarized": -1, "verdicts": null, "tie_scored": null, "short_of_hits": null}}',
         '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
-        '"facts": {"sources": null, "summarized": null, "verdicts": {"confirmed": "3"}, "cut_in_tie": null}}',
+        '"facts": {"sources": null, "summarized": null, "verdicts": {"confirmed": "3"}, "tie_scored": null, "short_of_hits": null}}',
+        '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
+        '"facts": {"sources": null, "summarized": null, "verdicts": null, "tie_scored": 0, "short_of_hits": null}}',
+        '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
+        '"facts": {"sources": null, "summarized": null, "verdicts": null, "tie_scored": null, "short_of_hits": 0}}',
+        # 新しい鍵も古い鍵（cut_in_tie）も無い
+        '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
+        '"facts": {"sources": null, "summarized": null, "verdicts": null}}',
+        # 古い鍵の値が壊れている（U24 の前もこれは壊れた行だった）
         '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
         '"facts": {"sources": null, "summarized": null, "verdicts": null, "cut_in_tie": 0}}',
+        # 新しい鍵が片方だけ。古い鍵があっても、新しい形の行として読んで欠けを壊れた行にする
+        '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
+        '"facts": {"sources": null, "summarized": null, "verdicts": null, "cut_in_tie": true, "short_of_hits": false}}',
+        '{"at": "2026-09-01T22:00:03", "run_id": "x", "level": "normal", "weekly": false, '
+        '"facts": {"sources": null, "summarized": null, "verdicts": null, "cut_in_tie": true, "tie_scored": false}}',
     ],
 )
 def test_broken_line_is_counted_not_dropped(tmp_path: Path, line: str) -> None:
@@ -397,7 +434,8 @@ def test_compose_a_quiet_week() -> None:
     assert "・判定: 正常 8・注意 0・異常 0" in lines
     assert "・取得: qiita ok 8・空 0・失敗 0／zenn ok 8・空 0・失敗 0" in lines
     assert "・要約 80・照合: 裏付け 80・本文に無い 0・確かめられない 0" in lines
-    assert "・上限の切れ目が同点の中にあった回: 0/8" in lines
+    assert "・物差しが平ら（点のある記事の同点で上限が切れた）回: 0/8" in lines
+    assert "・点0の記事が上限の枠に入った回（関心に当たる記事が上限より少ない）: 0/8" in lines
     assert "・読めなかった記録 0 行" in lines
 
 
@@ -451,7 +489,8 @@ def test_runs_that_stopped_midway_are_counted_separately() -> None:
     assert "・中身の記録が無い回 1（途中で止まった・数えられなかった）" in lines
     # 中身の無い回は、取得・要約・切れ目のどれにも数えない
     assert "・取得: qiita ok 1・空 0・失敗 0／zenn ok 1・空 0・失敗 0" in lines
-    assert "・上限の切れ目が同点の中にあった回: 0/1" in lines
+    assert "・物差しが平ら（点のある記事の同点で上限が切れた）回: 0/1" in lines
+    assert "・点0の記事が上限の枠に入った回（関心に当たる記事が上限より少ない）: 0/1" in lines
 
 
 def test_a_week_of_stopped_runs_says_there_is_no_record() -> None:
@@ -471,10 +510,55 @@ def test_verdicts_including_unknown() -> None:
 
 
 def test_flat_ruler_is_counted() -> None:
-    """F：物差しが平らに戻った回を数える（U22）。"""
-    runs = [_run(START + timedelta(days=d), facts=_facts(cut_in_tie=d < 3)) for d in range(7)]
+    """F：物差しが平らに戻った回を数える（U22）。**点0が枠に入った回とは別の行に。**"""
+    runs = [
+        _run(START + timedelta(days=d), facts=_facts(tie_scored=d < 3, short_of_hits=d < 2)) for d in range(7)
+    ]
     lines = _lines(_loaded(runs), _run(START + timedelta(days=7)))
-    assert "・上限の切れ目が同点の中にあった回: 3/8" in lines
+    assert "・物差しが平ら（点のある記事の同点で上限が切れた）回: 3/8" in lines
+    assert "・点0の記事が上限の枠に入った回（関心に当たる記事が上限より少ない）: 2/8" in lines
+
+
+def test_old_cut_in_tie_line_is_read_as_unknown(tmp_path: Path) -> None:
+    """**2026-10-07 の1行は `cut_in_tie` で書かれている。** 前の行は書き換えない（G）。
+
+    当時の `true` は「1点以上の同点」と「点0同士」を同じ顔にしていた（U24）。どちらとも言えないので
+    **両方「分からない」**として読む。壊れた行にすると、その日が「走らなかった日」に見える。
+    """
+    path = tmp_path / "runs.jsonl"
+    path.write_text(
+        '{"at": "2026-10-07T22:00:05.040918", "run_id": "20261007-220005", "level": "attention", '
+        '"facts": {"sources": {"qiita": "ok", "zenn": "ok"}, "summarized": 10, '
+        '"verdicts": {"mismatch": 2, "confirmed": 8}, "cut_in_tie": true}, "weekly": false}\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    loaded = weekly.load(path)
+
+    assert loaded.bad == 0
+    (run,) = loaded.runs
+    assert (run.facts.tie_scored, run.facts.short_of_hits) == (None, None)
+    assert run.facts.summarized == 10
+    lines = _lines(loaded, _run(datetime(2026, 10, 14, 22, 0, 0)))
+    # 分からない回は分母に入れない
+    assert "・物差しが平ら（点のある記事の同点で上限が切れた）回: 0/1" in lines
+    assert "・点0の記事が上限の枠に入った回（関心に当たる記事が上限より少ない）: 0/1" in lines
+
+
+def test_new_keys_win_over_the_old_one(tmp_path: Path) -> None:
+    """**新しい鍵があれば、古い鍵で捨てない。** 手で直した行・混ざった行で、確かな値を「分からない」にしない。"""
+    path = tmp_path / "runs.jsonl"
+    path.write_text(
+        '{"at": "2026-10-08T22:00:00", "run_id": "r", "level": "normal", "weekly": false, '
+        '"facts": {"sources": null, "summarized": null, "verdicts": null, '
+        '"cut_in_tie": true, "tie_scored": false, "short_of_hits": true}}\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    (run,) = weekly.load(path).runs
+    assert (run.facts.tie_scored, run.facts.short_of_hits) == (False, True)
 
 
 def test_broken_lines_are_reported() -> None:

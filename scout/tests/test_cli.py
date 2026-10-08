@@ -884,7 +884,7 @@ def _history(tmp_path: Path, *runs: weekly.Run) -> None:
 
 
 def _old_run(at: datetime = WEEK_AGO, *, sent: bool = False) -> weekly.Run:
-    facts = weekly.Facts(sources=(("qiita", fetch.OK), ("zenn", fetch.OK)), summarized=1, verdicts=(("confirmed", 1),), cut_in_tie=False)
+    facts = weekly.Facts(sources=(("qiita", fetch.OK), ("zenn", fetch.OK)), summarized=1, verdicts=(("confirmed", 1),), tie_scored=False, short_of_hits=False)
     return weekly.Run(at=at, run_id=f"{at:%Y%m%d-%H%M%S}", level=notify.NORMAL, facts=facts, weekly=sent)
 
 
@@ -904,7 +904,7 @@ def test_each_run_is_recorded(tmp_path: Path) -> None:
     assert run.level == notify.NORMAL
     assert run.facts.sources == (("qiita", fetch.OK), ("zenn", fetch.OK))
     assert run.facts.summarized == 1
-    assert run.facts.cut_in_tie is False
+    assert (run.facts.tie_scored, run.facts.short_of_hits) == (False, False)
     assert run.weekly is False
     assert "【週のまとめ】" not in world.line.bodies[0]  # 記録を始めた日には出さない
 

@@ -19,8 +19,10 @@ summarizable = ["qiita"]
 # 取得の時点で全員に付いているので点が平らになり、いいね（ほぼ全部 0〜1）で選ばれていた。
 # 取得の絞り込みは sources の query（tag:ClaudeCode）がやるので、ここから外しても集める記事は変わらない。
 # 語はタイトルの部分一致——`mod` だと `Plan Mode` に当たるので `mods` にしてある。
+# 単数の「Claude mod で〜」は `mods` に当たらず点0だった（2026-10-07・U24）ので `Claude mod` も置く。
+# 「Claude Mods」は両方に当たって点2になる（同じ関心を2回数える）。点が上がるだけで外れる記事は出ないので承知で残す。
 tags = ["ContextEngineering", "コンテキスト管理", "MCP", "AnthropicSkills", "SKILLS"]
-keywords = ["CLAUDE.md", "memory", "記憶", "引き継ぎ", "コンテキスト", "文脈", "MCP", "mods", "スキル", "skill"]
+keywords = ["CLAUDE.md", "memory", "記憶", "引き継ぎ", "コンテキスト", "文脈", "MCP", "mods", "Claude mod", "スキル", "skill"]
 mute_tags = []
 mute_keywords = []
 # 要約へ回す上限。`max_calls`（既定 10）より大きくすると設定の誤りになる。

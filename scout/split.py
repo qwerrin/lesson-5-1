@@ -13,6 +13,13 @@
 Qiita の本文は切れていない（2026-09-23 実測・最短 226字の完結した記事）。
 しきい値は**高すぎれば見出しだけで出るだけ**、低すぎれば*ほぼ空の本文を「要約」する*。
 **安全側は高いほう**なので 500字に置く。
+
+関心の語に当たらない記事は要約しない（U24）
+--------------------------------------------------------------------------
+
+`rank` は点0の記事も上限の枠に入れる（**点が低いことは捨てる理由にならない**）。
+2026-10-07 は当たった記事が5件だけで、**残り5枠を点0の記事がいいね順で埋め、要約の課金を使った**。
+だから点0は**見出しだけ**にする。捨てはしない——リンクは Inbox に載る。
 """
 
 from __future__ import annotations
@@ -29,6 +36,8 @@ from rank import OVER_CAP, Ranking, Scored
 NOT_SUMMARIZABLE = "not_summarizable"
 NO_BODY = "no_body"
 TOO_SHORT = "too_short"
+#: 取得元も本文も問題ないが、関心の語に1つも当たらなかった（点0・U24）。
+NO_HITS = "no_hits"
 #: 本文も取得元も問題ないが、`rank` で点を付けなかった（物差しが無いので**上限の枠に入らない**）。
 #: `rank` の上限で外れた記事は、別の理由 `OVER_CAP` で見出しだけ出す。
 UNRANKED = "unranked"
@@ -85,6 +94,9 @@ def split(
 
     for scored in ranking.picked:
         reason = _why(scored.kept, summarizable=summarizable, min_body=min_body)
+        if reason is None and scored.score < 1:
+            # **取得元と本文を先に見る。** そこで止まるなら、点は直し方を変えない。
+            reason = NO_HITS
         if reason is None:
             summarize.append(scored)
         else:
